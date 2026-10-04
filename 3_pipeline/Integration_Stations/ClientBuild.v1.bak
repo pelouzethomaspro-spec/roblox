@@ -1,0 +1,354 @@
+ClientBuild = {}
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local ContextActionService = game:GetService("ContextActionService")
+
+local Folder = workspace.Plots:WaitForChild(game.Players.LocalPlayer.Name .. "'s plot")
+local plotcenter = Folder:WaitForChild("PlotCenterRef").Value
+
+local ClientData = require(script.Parent:WaitForChild("ClientData"))
+local Catalogue = require(ReplicatedStorage:WaitForChild("Catalogue"))
+
+local TemplatePrixUI = ReplicatedStorage:WaitForChild("TemplatePrixUI")
+
+local Placefunction = ReplicatedStorage:WaitForChild("Placefunction")
+local Destroyfunction = ReplicatedStorage:WaitForChild("Destroyfunction")
+local Extensionfunction = ReplicatedStorage:WaitForChild("Extensionfunction")
+
+local phantom = nil
+local orientation = 0
+local target = nil
+local categorie = nil
+local prixUI = nil
+
+-- ======================================================================================================================
+-- GESTION DU PHANTOM
+-- ======================================================================================================================
+
+local function PositionPhantom(categorie)
+	
+	local camera = workspace.CurrentCamera
+	local positionsouris = UserInputService:GetMouseLocation()
+	local ray = camera:ViewportPointToRay(positionsouris.X, positionsouris.Y)
+	local positionreelle = workspace:Raycast(ray.Origin, ray.Direction * 250)
+	
+	if not positionreelle then return nil end
+	
+	local plotcenterposition = plotcenter:GetPivot()
+	local positionrelative = plotcenterposition:PointToObjectSpace(positionreelle.Position)
+	local caseX = math.floor(positionrelative.X / 10) + 1
+	local caseZ = math.floor(positionrelative.Z / 10) + 1
+	
+	local X = (caseX - 0.5) * 10
+	local Z = (caseZ - 0.5) * 10 - 5 
+	local Y = 0
+	if categorie == "Furniture" then
+		Y = 0.616
+	elseif categorie == "Plafond" then
+		Y = 21.516
+	end
+	
+	return plotcenterposition * CFrame.new(X, Y, Z) * CFrame.Angles(0, math.rad(orientation * 90), 0)
+end
+
+local function TurnPhantom(_, etat)
+	if etat == Enum.UserInputState.Begin then
+		orientation = (orientation + 1) % 4
+	end
+end
+
+local function PlacePhantom(_, etat)
+	if etat == Enum.UserInputState.Begin and phantom and target then
+		local succes, raison = Placefunction:InvokeServer(phantom.Name, categorie, orientation, target)
+		if not succes then warn("Placement refuse : " .. tostring(raison)) end
+	end
+end
+
+-- boutons de l'interface (mobile / manette) : tourner et poser sans clavier ni clic au sol
+function ClientBuild.Tourner()
+	orientation = (orientation + 1) % 4
+	return orientation
+end
+
+function ClientBuild.Poser()
+	if not (phantom and target) then return false, "aucun objet selectionne" end
+	local succes, raison = Placefunction:InvokeServer(phantom.Name, categorie, orientation, target)
+	if not succes then warn("Placement refuse : " .. tostring(raison)) end
+	return succes, raison
+end
+
+function ClientBuild.EnPlacement()
+	return phantom ~= nil
+end
+
+function ClientBuild.CreatePhantom(name, cat)
+	
+	ClientBuild.DestroyLaser()
+	ClientBuild.DestroyPhantom()
+	
+	local dossier = ReplicatedStorage:WaitForChild(cat)
+	local item = dossier:FindFirstChild(name)
+	categorie = cat
+	
+	phantom = item:Clone()
+	-- un fantome n'est pas une station : pas de tag (sinon le systeme des stations l'animerait), marque "Apercu"
+	game:GetService("CollectionService"):RemoveTag(phantom, "Station")
+	phantom:SetAttribute("Apercu", true)
+	for _, piece in phantom:GetDescendants() do
+		if piece:IsA("BasePart") then
+			piece.CanCollide = false
+			piece.CanQuery = false
+			piece.Anchored = true                      -- pieces mobiles des stations : rien ne doit bouger sur le fantome
+		end
+	end
+	phantom.Parent = workspace
+	
+	local infos = Catalogue.GetInfo(cat, name)
+	local prix = infos and infos.Prix or 0
+
+	prixUI = TemplatePrixUI:Clone()
+	prixUI.Adornee = phantom.PrimaryPart or phantom:FindFirstChildWhichIsA("BasePart")
+	prixUI.Parent = game.Players.LocalPlayer:WaitForChild("PlayerGui")
+	local assez = (ClientData.Data.Money or 0) >= prix
+	prixUI.Price.Text = "$ " .. prix
+	prixUI.Price.TextColor3 = assez and Color3.fromRGB(124, 255, 10) or Color3.fromRGB(247, 85, 0)
+	
+	ContextActionService:BindAction("Placer", PlacePhantom, false, Enum.UserInputType.MouseButton1)
+	ContextActionService:BindAction("Tourner", TurnPhantom, false, Enum.KeyCode.R)
+	RunService:BindToRenderStep("BouclePhantom", Enum.RenderPriority.Camera.Value, function()
+		if not phantom then return end
+
+		target = PositionPhantom(categorie)
+		if target then
+			phantom:PivotTo(target)
+		end
+	end)
+end
+
+function ClientBuild.DestroyPhantom()
+	
+	RunService:UnbindFromRenderStep("BouclePhantom")
+	ContextActionService:UnbindAction("Placer")
+	ContextActionService:UnbindAction("Tourner")
+
+	if phantom then
+		phantom:Destroy()
+		phantom = nil
+	end
+end
+
+-- ======================================================================================================================
+-- GESTION DU LASER
+-- ======================================================================================================================
+
+local function DeleteTarget(actionName, state, input)
+	if state == Enum.UserInputState.Begin and object then
+		local succes = Destroyfunction:InvokeServer(object)
+
+		if succes and laser then
+			laser.Parent = nil
+			object = nil
+		end
+	end
+end
+
+function ClientBuild.CreateLaser()
+	
+	ClientBuild.DestroyLaser()
+	ClientBuild.DestroyPhantom()
+
+	laser = Instance.new("Highlight")
+	laser.FillColor = Color3.fromRGB(255, 0, 0)
+	laser.OutlineColor = Color3.fromRGB(255, 255, 255)
+	laser.FillTransparency = 0.5
+	laser.Parent = nil
+
+	ContextActionService:BindAction("Supprimer", DeleteTarget, false, Enum.UserInputType.MouseButton1)
+
+	RunService:BindToRenderStep("BoucleLaser", Enum.RenderPriority.Camera.Value, function()
+		if not laser then return end
+
+		local camera = workspace.CurrentCamera
+		local positionsouris = UserInputService:GetMouseLocation()
+		local ray = camera:ViewportPointToRay(positionsouris.X, positionsouris.Y)
+
+		local resultat = workspace:Raycast(ray.Origin, ray.Direction * 250)
+
+		if resultat and resultat.Instance then
+			local modeleTouche = resultat.Instance:FindFirstAncestorOfClass("Model")
+
+			if modeleTouche and modeleTouche:GetAttribute("Categorie") then
+				if object ~= modeleTouche then
+					object = modeleTouche
+					laser.Parent = object
+				end
+				return
+			end
+		end
+
+		if object then
+			laser.Parent = nil
+			object = nil
+		end
+	end)
+end
+
+function ClientBuild.DestroyLaser()
+	ContextActionService:UnbindAction("Supprimer")
+	RunService:UnbindFromRenderStep("BoucleLaser")
+
+	if laser then
+		laser:Destroy()
+		laser = nil
+	end
+
+	object = nil
+end
+
+-- ======================================================================================================================
+-- GESTION DES EXTENSIONS : zones achetables = carres verts au sol (contour), halo vert au survol, clic = panneau d'achat
+-- ======================================================================================================================
+
+local murs = {}
+local VERT = Color3.fromRGB(80, 255, 120)
+local HAUTEUR_TRAITS = 0.56           -- juste au-dessus du sol (+0.5), sous les meubles (+0.616)
+
+-- piece plate locale (jamais envoyee au serveur) ; query = vrai si la souris doit pouvoir la viser
+local function plaque(nom, cf, taille, couleur, transparence, neon, query, liste)
+	local p = Instance.new("Part")
+	p.Name = nom
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanQuery = query or false
+	p.CanTouch = false
+	p.CastShadow = false
+	p.Material = neon and Enum.Material.Neon or Enum.Material.SmoothPlastic
+	p.Color = couleur
+	p.Transparency = transparence
+	p.Size = taille
+	p.CFrame = cf
+	p.Parent = workspace
+	table.insert(liste, p)
+	return p
+end
+
+-- contour d'un rectangle (coordonnees dans le repere du plot : x de x0 a x1, z de z0 a z1)
+local function contour(x0, x1, z0, z1, epaisseur, couleur, transparence, neon, liste, hauteur)
+	local base = plotcenter:GetPivot()
+	local h = hauteur or HAUTEUR_TRAITS
+	local e = epaisseur
+	plaque("Trait", base * CFrame.new((x0 + x1) / 2, h, z0), Vector3.new(x1 - x0 + e, 0.05, e), couleur, transparence, neon, false, liste)
+	plaque("Trait", base * CFrame.new((x0 + x1) / 2, h, z1), Vector3.new(x1 - x0 + e, 0.05, e), couleur, transparence, neon, false, liste)
+	plaque("Trait", base * CFrame.new(x0, h, (z0 + z1) / 2), Vector3.new(e, 0.05, z1 - z0 + e), couleur, transparence, neon, false, liste)
+	plaque("Trait", base * CFrame.new(x1, h, (z0 + z1) / 2), Vector3.new(e, 0.05, z1 - z0 + e), couleur, transparence, neon, false, liste)
+end
+
+-- zone achetable : contour vert, halo au survol de la souris, clic -> panneau Acheter / Annuler
+local function CreateBuyZone(x0, x1, z0, z1, prix, axis)
+	local base = plotcenter:GetPivot()
+	local cx, cz = (x0 + x1) / 2, (z0 + z1) / 2
+	local lx, lz = x1 - x0, z1 - z0
+	contour(x0, x1, z0, z1, 0.5, VERT, 0.1, true, murs)
+
+	-- surface cliquable (invisible au repos) + halo (surface verte qui depasse un peu, visible au survol)
+	local zone = plaque("ZoneExtension", base * CFrame.new(cx, HAUTEUR_TRAITS, cz), Vector3.new(lx, 0.1, lz), VERT, 1, true, true, murs)
+	local halo = plaque("HaloExtension", base * CFrame.new(cx, HAUTEUR_TRAITS - 0.02, cz), Vector3.new(lx + 4, 0.05, lz + 4), VERT, 1, true, false, murs)
+
+	local click = Instance.new("ClickDetector")
+	click.MaxActivationDistance = 300
+	click.Parent = zone
+
+	local TemplateUI = ReplicatedStorage:WaitForChild("TemplateExtensionUI")
+	local billboard = TemplateUI:Clone()
+	billboard.Adornee = zone
+	billboard.Enabled = false
+	billboard.Parent = game.Players.LocalPlayer:WaitForChild("PlayerGui")
+	billboard.Frame.Price.Text = `$ {prix}`
+	table.insert(murs, billboard)
+
+	click.MouseHoverEnter:Connect(function()
+		zone.Transparency = 0.55
+		halo.Transparency = 0.8
+	end)
+	click.MouseHoverLeave:Connect(function()
+		zone.Transparency = 1
+		halo.Transparency = 1
+	end)
+	click.MouseClick:Connect(function()
+		billboard.Enabled = true
+	end)
+
+	billboard.Frame.Cancel.MouseButton1Click:Connect(function()
+		billboard.Enabled = false
+	end)
+	billboard.Frame.Buy.MouseButton1Click:Connect(function()
+		local succes = Extensionfunction:InvokeServer(axis)
+		if succes then
+			billboard.Enabled = false
+			ClientBuild.CreateExtension()
+		end
+	end)
+end
+
+-- ======================================================================================================================
+-- QUADRILLAGE AU SOL : traits noirs fins sur les bords des cases de 10 x 10 studs, pendant la construction
+-- ======================================================================================================================
+
+local grille = {}
+local NOIR = Color3.fromRGB(20, 20, 20)
+
+function ClientBuild.DestroyGrille()
+	for _, p in ipairs(grille) do p:Destroy() end
+	table.clear(grille)
+end
+
+-- les cases du plot : x de 0 a currentX*10, z de -5 a currentZ*10-5 (voir PositionPhantom)
+function ClientBuild.CreateGrille()
+	ClientBuild.DestroyGrille()
+	local currentX, currentZ = ClientData.GetPlotSize()
+	local base = plotcenter:GetPivot()
+	local x0, x1 = 0, currentX * 10
+	local z0, z1 = -5, currentZ * 10 - 5
+	local e = 0.15
+	for i = 0, currentX do
+		plaque("Grille", base * CFrame.new(i * 10, HAUTEUR_TRAITS, (z0 + z1) / 2), Vector3.new(e, 0.05, z1 - z0 + e), NOIR, 0.15, false, false, grille)
+	end
+	for j = 0, currentZ do
+		plaque("Grille", base * CFrame.new((x0 + x1) / 2, HAUTEUR_TRAITS, z0 + j * 10), Vector3.new(x1 - x0 + e, 0.05, e), NOIR, 0.15, false, false, grille)
+	end
+end
+
+function ClientBuild.DestroyExtension()
+	for _, mur in ipairs(murs) do
+		if mur then
+			mur:Destroy()
+		end
+	end
+	table.clear(murs)
+	ClientBuild.DestroyGrille()
+end
+
+-- extensions : "droit" ajoute 3 rangees au bout du plot (z), "haut" ajoute 2 colonnes sur le cote (x)
+function ClientBuild.CreateExtension()
+	ClientBuild.DestroyExtension()
+	ClientBuild.CreateGrille()
+
+	local currentX, currentZ = ClientData.GetPlotSize()
+	local nextX, nextZ = ClientData.GetNextExtensions()
+
+	if nextZ then
+		local infosZ = Catalogue.GetInfo("Extension", nextZ)
+		local ajout = (infosZ and infosZ.AddZ) or 3
+		CreateBuyZone(0, currentX * 10, currentZ * 10 - 5, (currentZ + ajout) * 10 - 5, infosZ and infosZ.Prix or 0, "Z")
+	end
+
+	if nextX then
+		local infosX = Catalogue.GetInfo("Extension", nextX)
+		local ajout = (infosX and infosX.AddX) or 2
+		CreateBuyZone(currentX * 10, (currentX + ajout) * 10, -5, currentZ * 10 - 5, infosX and infosX.Prix or 0, "X")
+	end
+end
+
+return ClientBuild

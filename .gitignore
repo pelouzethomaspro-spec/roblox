@@ -1,0 +1,6 @@
+# Fichiers generes / gros binaires
+3_pipeline/merger/target/
+3_pipeline/validator/target/
+3_pipeline/outils_luau/bin/
+*.rbxlx
+__pycache__/

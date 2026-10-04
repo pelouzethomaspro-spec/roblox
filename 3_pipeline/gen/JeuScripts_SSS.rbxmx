@@ -1,0 +1,138 @@
+<roblox version="4">
+<Item class="Script"><Properties><string name="Name">MapAlignement</string><ProtectedString name="Source">--[[ MapAlignement (Script, ServerScriptService) — recale le jeu sur la map V17 importee.
+	La map est construite autour de (0, 0, 0) mais l'import 3D de Studio peut la decaler. Comme InstallerMap, on mesure
+	le decalage sur la dalle de reference "Sol_Herbe_0_0" et on l'applique a tout ce qui est place en coordonnees de map :
+	les 8 plots (Workspace/PlotSpawns : PlotCenter, apparition, camera, noeuds des voitures) et les trajets des voitures
+	d'ambiance (attribut Workspace.DecalageMap lu par CarAmbiance). Sans la map (pas encore importee), rien ne bouge et
+	le sol plat provisoire reste en place pour pouvoir tester.
+]]
+local REFERENCE = Vector3.new(-1011.22, 0, 1011.22)      -- position attendue de Sol_Herbe_0_0 (DonneesArbres.reference)
+
+local function trouverReference()
+	for _, enfant in ipairs(workspace:GetChildren()) do
+		if enfant:IsA("Model") or enfant:IsA("Folder") then
+			for _, d in ipairs(enfant:GetDescendants()) do
+				if d:IsA("BasePart") and string.find(d.Name, "Sol_Herbe_0_0", 1, true) then return d end
+			end
+		end
+	end
+end
+
+local ref = trouverReference()
+local solProvisoire = workspace:FindFirstChild("SolProvisoire")
+if not ref then
+	warn("[Map] map V17 non importee : sol plat provisoire conserve (Accueil &gt; Importer 3D &gt; MAP_MOTIFS_V17_AVEC_CHAINES.fbx puis ARBRES_V17.fbx)")
+	workspace:SetAttribute("DecalageMap", Vector3.zero)
+	return
+end
+if solProvisoire then solProvisoire:Destroy() end
+-- reperes de debug d'InstallerMap (zones orange des plots) : inutiles, le jeu a sa propre grille
+local zones = workspace:FindFirstChild("PlotZones")
+if zones then zones:Destroy() end
+
+local decalage = ref.Position - REFERENCE
+decalage = Vector3.new(decalage.X, 0, decalage.Z)          -- la map est posee a Y = 0 : on ne recale qu'a l'horizontale
+workspace:SetAttribute("DecalageMap", decalage)
+if decalage.Magnitude &lt; 0.05 then
+	print("[Map] map V17 en place, aucun decalage")
+	return
+end
+
+local plots = workspace:FindFirstChild("PlotSpawns")
+if plots then
+	for _, plot in ipairs(plots:GetChildren()) do
+		if plot:IsA("Model") and not plot:GetAttribute("Recale") then
+			plot:PivotTo(plot:GetPivot() + decalage)
+			plot:SetAttribute("Recale", true)
+		end
+	end
+end
+print(("[Map] decalage de l'import applique aux plots : %s"):format(tostring(decalage)))
+</ProtectedString></Properties></Item>
+<Item class="Script"><Properties><string name="Name">CarAmbiance</string><ProtectedString name="Source">--[[ CarAmbiance (Script, ServerScriptService) — voitures d'ambiance du centre de la map (trace rouge de Thomas).
+	Chaque chaine de production (NO, NE, SE, SO) laisse sortir une voiture de temps en temps : elle rejoint le rond-point
+	central, en fait 4 tours sur la voie exterieure, prend l'avenue, contourne le rond-point exterieur, suit la route du
+	tour puis la diagonale jusqu'au bord de la map, ou elle disparait. Trajets : ServerStorage/RoutesAmbiance (generes
+	depuis la geometrie de la map), decales du decalage d'import (Workspace.DecalageMap, pose par MapAlignement).
+	Purement decoratif : aucune interaction avec les joueurs, aucun argent, rien n'est envoye par le client.
+]]
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local CADENCE_MIN, CADENCE_MAX = 30, 50       -- secondes entre deux voitures pour une meme usine (cadence basse)
+local MAX_PAR_USINE = 6                       -- garde-fou : jamais plus de N voitures d'ambiance par usine
+local DEMI_MAP = 1349                         -- au-dela, la voiture est hors map : on la supprime
+
+local CarManager = require(ServerScriptService:WaitForChild("CarManager"))
+local Car = require(ReplicatedStorage:WaitForChild("Catalogue"):WaitForChild("Car"))
+local Routes = require(ServerStorage:WaitForChild("RoutesAmbiance"))
+
+local dossier = Instance.new("Folder"); dossier.Name = "Cars_Ambiance"; dossier.Parent = workspace
+
+local function decalage()
+	local d = workspace:GetAttribute("DecalageMap")
+	return (typeof(d) == "Vector3") and d or Vector3.zero
+end
+
+local function cframeNoeud(n)
+	local d = decalage()
+	local pos = Vector3.new(n[1], n[2], n[3]) + d
+	return CFrame.lookAt(pos, pos + Vector3.new(n[4], 0, n[5]))
+end
+
+-- un modele de voiture au hasard parmi tout le catalogue (toutes raretes)
+local function modeleAuHasard()
+	local tiers = Car.Ordre or {}
+	for _ = 1, 10 do
+		local tier = tiers[math.random(1, math.max(1, #tiers))]
+		local pool = tier and Car[tier]
+		local nom = pool and pool.Models and pool.Models[math.random(1, #pool.Models)]
+		local dossierTier = nom and ReplicatedStorage.Car:FindFirstChild(tier)
+		local modele = dossierTier and dossierTier:FindFirstChild(nom)
+		if modele then return modele end
+	end
+	return nil
+end
+
+local function trajet(voiture, route)
+	local premier = cframeNoeud(route[1])
+	voiture:PivotTo(premier)
+	for i = 2, #route do
+		if not voiture.Parent then return end
+		local cible = cframeNoeud(route[i])
+		CarManager.AnimationNodeCar(voiture, cible, i == #route)
+		local p = cible.Position - decalage()
+		if math.abs(p.X) &gt; DEMI_MAP or math.abs(p.Z) &gt; DEMI_MAP then break end
+	end
+	voiture:Destroy()
+end
+
+local actives = {}
+for nomUsine, route in pairs(Routes) do
+	actives[nomUsine] = 0
+	task.spawn(function()
+		task.wait(math.random(3, 12))                 -- depart decale d'une usine a l'autre
+		while true do
+			if actives[nomUsine] &lt; MAX_PAR_USINE then
+				local modele = modeleAuHasard()
+				if modele then
+					local voiture = CarManager.SpawnCar(modele)
+					voiture.Name = "Ambiance_" .. nomUsine
+					voiture:SetAttribute("Ambiance", true)
+					voiture.Parent = dossier
+					actives[nomUsine] += 1
+					task.spawn(function()
+						local ok, err = pcall(trajet, voiture, route)
+						if not ok then warn("[Ambiance] " .. tostring(err)) end
+						if voiture.Parent then voiture:Destroy() end
+						actives[nomUsine] -= 1
+					end)
+				end
+			end
+			task.wait(math.random(CADENCE_MIN, CADENCE_MAX))
+		end
+	end)
+end
+</ProtectedString></Properties></Item>
+</roblox>

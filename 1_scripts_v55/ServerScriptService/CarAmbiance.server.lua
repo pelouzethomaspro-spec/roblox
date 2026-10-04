@@ -1,0 +1,276 @@
+--[[ CarAmbiance (Script, ServerScriptService) — voitures d'ambiance du centre de la map (trace rouge de Thomas).
+	Chaque chaine de production (NO, NE, SE, SO) laisse sortir une voiture : elle rejoint le rond-point central, en fait
+	4 tours sur la voie exterieure (sens antihoraire, conduite a droite), prend l'avenue, contourne le rond-point exterieur, suit la route du tour puis la
+	diagonale jusqu'au bord de la map, ou elle disparait. Trajets : ServerStorage/RoutesAmbiance (generes depuis la
+	geometrie de la map), decales du decalage d'import (Workspace.DecalageMap, pose par MapAlignement).
+
+	LA VOITURE QUI SORT EST CELLE QUE LA CHAINE VIENT D'ASSEMBLER. La chaine (decor anime chez chaque joueur, module
+	Stations/Comportements/Chaine) est calee sur l'horloge du serveur : cycle n = floor((t - PHASE) / CYCLE), la voiture
+	au poste de sortie a le numero n - 6 et son modele / sa couleur sont tires d'un hachage de ce numero (identique chez
+	tous les joueurs). Le serveur refait exactement ce calcul : quand la voiture disparait dans la lumiere blanche
+	(EVENEMENTS.sortie.arrivee), il fait apparaitre le meme modele, de la meme couleur, au portail de l'usine.
+	Cadence : au plus une voiture par usine toutes les CADENCE_MIN secondes et MAX_PAR_USINE en circulation.
+
+	ACHAT : chaque voiture d'ambiance porte un prix (PRIX_BASE x multiplicateur de sa rarete, Catalogue/Car) et une
+	ProximityPrompt (style Roblox : s'affiche quand on s'approche, maintenir E pour acheter). Tout est verifie ici, cote
+	serveur : plot choisi, voiture encore sur l'anneau, argent suffisant, pas deja vendue. Une fois achetee, la voiture
+	va au plus court : elle quitte l'anneau a la prochaine sortie vers le plot de l'acheteur (si cette sortie vient
+	d'etre depassee, elle termine le tour et la prend au passage suivant), contourne le rond-point
+	exterieur et vient se ranger sur la route du tour devant l'entree du plot (trajet Routes.Achat.PlotN), ou elle
+	devient une cliente normale de ce plot (CarManager.AccueillirVoitureAchetee : file, station, paiement, index).
+]]
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local CADENCE_MIN = 30                        -- secondes minimum entre deux voitures d'une meme usine (une sortie sur deux environ)
+local MAX_PAR_USINE = 4                       -- garde-fou : jamais plus de N voitures d'ambiance par usine
+local DEMI_MAP = 1349                         -- au-dela, la voiture est hors map : on la supprime
+
+local PRIX_BASE = 150                         -- prix d'achat = PRIX_BASE x Mult de la rarete (Common 150 $ ... Divine 3750 $)
+
+local CarManager = require(ServerScriptService:WaitForChild("CarManager"))
+local PlayerData = require(ServerScriptService:WaitForChild("PlayerData"))
+local Car = require(ReplicatedStorage:WaitForChild("Catalogue"):WaitForChild("Car"))
+local Routes = require(ServerStorage:WaitForChild("RoutesAmbiance"))
+local okD, D = pcall(function() return require(ReplicatedStorage:WaitForChild("Stations"):WaitForChild("Donnees"):WaitForChild("ChaineProduction")) end)
+if not okD then warn("[Ambiance] donnees de la chaine introuvables : " .. tostring(D)); D = nil end
+
+local dossier = Instance.new("Folder"); dossier.Name = "Cars_Ambiance"; dossier.Parent = workspace
+
+-- memes tirages que Stations/Comportements/Chaine (hachage, modeles, couleurs) : a garder identiques
+local COULEURS = {
+	Color3.fromRGB(200, 22, 32),  Color3.fromRGB(24, 82, 196),  Color3.fromRGB(18, 140, 70),  Color3.fromRGB(242, 190, 24),
+	Color3.fromRGB(240, 108, 22), Color3.fromRGB(24, 24, 28),   Color3.fromRGB(236, 236, 236), Color3.fromRGB(122, 128, 136),
+	Color3.fromRGB(112, 40, 164), Color3.fromRGB(222, 72, 144), Color3.fromRGB(20, 160, 172), Color3.fromRGB(112, 16, 30),
+}
+local function hachage(i)
+	local h = i % 4294967296
+	h = bit32.bxor(h, bit32.rshift(h, 16)); h = (h * 40507) % 4294967296
+	h = bit32.bxor(h, bit32.rshift(h, 13)); h = (h * 48271) % 4294967296
+	return bit32.bxor(h, bit32.rshift(h, 16))
+end
+local function voitureDeSortie(n)
+	local id = n - 6                                                  -- poste 6 = sortie
+	local L = D.VOITURES
+	return L[hachage(id) % #L + 1], COULEURS[hachage(id * 7 + 3) % #COULEURS + 1], id
+end
+
+local function decalage()
+	local d = workspace:GetAttribute("DecalageMap")
+	return (typeof(d) == "Vector3") and d or Vector3.zero
+end
+
+local function cframeNoeud(n)
+	local d = decalage()
+	local pos = Vector3.new(n[1], n[2], n[3]) + d
+	return CFrame.lookAt(pos, pos + Vector3.new(n[4], 0, n[5]))
+end
+
+local function estRoue(n)
+	n = string.lower(n)
+	return n:find("wheel") or n:find("roue") or n:find("pneu") or n:find("tire") or n:find("tyre")
+end
+
+-- carrosserie : pieces nommees model/body/carrosserie/caisse, sinon la plus grosse piece opaque hors roues
+local function peindre(voiture, couleur)
+	local corps = {}
+	local best, vb = nil, 0
+	for _, p in ipairs(voiture:GetDescendants()) do
+		if p:IsA("BasePart") and p.Name ~= "Root" then
+			local dansRoue = false
+			local a = p
+			while a and a ~= voiture do if estRoue(a.Name) then dansRoue = true break end a = a.Parent end
+			if not dansRoue then
+				local n = string.lower(p.Name)
+				if n == "model" or n == "body" or n == "carrosserie" or n == "caisse" then table.insert(corps, p) end
+				local v = p.Size.X * p.Size.Y * p.Size.Z
+				if p.Transparency < 0.3 and v > vb then best, vb = p, v end
+			end
+		end
+	end
+	if #corps == 0 and best then corps = {best} end
+	for _, p in ipairs(corps) do
+		p.Color = couleur
+		local sa = p:FindFirstChildOfClass("SurfaceAppearance")
+		if sa then sa.Color = couleur end
+	end
+end
+
+local modeles = ReplicatedStorage:WaitForChild("VoituresModeles")
+local actives, derniere = {}, {}                -- par usine : voitures d'ambiance en circulation, heure du dernier depart
+
+local R_ANNEAU = 165.4                        -- rayon de la voie exterieure de l'anneau (RoutesAmbiance)
+
+-- point de l'anneau a un angle donne (degres), cap dans le sens de circulation (antihoraire vu de dessus = angles
+-- decroissants : conduite a droite)
+local function noeudAnneau(a)
+	local r = math.rad(a)
+	return {R_ANNEAU * math.cos(r), 0.57, R_ANNEAU * math.sin(r), math.sin(r), -math.cos(r), a % 360}
+end
+
+-- Trajet d'une voiture d'ambiance. etat.achat (pose par l'achat) = {joueur, trajet} : au dernier tour d'anneau, au point
+-- de sortie du trajet d'achat (meme angle), la voiture bifurque vers le plot de l'acheteur.
+local function trajet(voiture, route, nomUsine, etat)
+	local premier = cframeNoeud(route[1])
+	voiture:PivotTo(premier)
+	local premierAnneau, dernierAnneau = nil, nil
+	for i, n in ipairs(route) do if n[6] then premierAnneau = premierAnneau or i; dernierAnneau = i end end
+	local noeuds = table.clone(route)
+	local i = 2
+	while i <= #noeuds do
+		if not voiture.Parent then return end
+		local n = noeuds[i]
+		voiture:SetAttribute("SurAnneau", n[6] ~= nil)
+		local cible = cframeNoeud(n)
+		CarManager.AnimationNodeCar(voiture, cible, i == #noeuds)
+		if etat.achat and n[6] then
+			-- achetee : on quitte l'anneau a la PROCHAINE sortie vers le plot de l'acheteur (pas de demi-tour : si la
+			-- sortie vient d'etre passee, on continue le tour et on la prend au passage suivant), sans finir les 4 tours
+			local sortie = etat.achat.trajet[1]
+			if n[6] == sortie[6] then
+				-- bifurcation : on est au point de sortie de l'anneau du trajet d'achat
+				voiture:SetAttribute("SurAnneau", false)
+				actives[nomUsine] -= 1
+				local T = etat.achat.trajet
+				for j = 2, #T do
+					if not voiture.Parent then return end
+					CarManager.AnimationNodeCar(voiture, cframeNoeud(T[j]), j == #T)
+				end
+				if not CarManager.AccueillirVoitureAchetee(etat.achat.joueur, voiture) then voiture:Destroy() end
+				return "achetee"
+			elseif i == dernierAnneau then
+				-- achetee apres le point de sortie du dernier tour : un tour de plus, la bifurcation viendra
+				local a = n[6]
+				for k = 1, 24 do table.insert(noeuds, i + k, noeudAnneau(a - 15 * k)) end
+				dernierAnneau = i + 24
+			end
+		elseif n[6] and i == dernierAnneau and Enchere and Enchere.EnCours(voiture) then
+			-- v55 : une enchere est en cours au dernier tour : la voiture fait un tour de plus (au plus 3) le temps de conclure
+			etat.toursEnchere = (etat.toursEnchere or 0) + 1
+			if etat.toursEnchere <= 3 then
+				local a = n[6]
+				for k = 1, 24 do table.insert(noeuds, i + k, noeudAnneau(a - 15 * k)) end
+				dernierAnneau = i + 24
+			end
+		end
+		if n[6] == nil and noeuds[i - 1] and noeuds[i - 1][6] ~= nil and not etat.achat and Enchere then
+			Enchere.Arreter(voiture)        -- v55 : elle a quitte l'anneau sans acheteur : plus d'enchere possible
+		end
+		local p = cible.Position - decalage()
+		if math.abs(p.X) > DEMI_MAP or math.abs(p.Z) > DEMI_MAP then break end
+		i += 1
+	end
+	voiture:Destroy()
+end
+
+-- prix et invite d'achat d'une voiture d'ambiance
+local function prixDe(nomModele)
+	local tier = Car.TierDe and Car.TierDe(nomModele) or "Common"
+	local mult = (Car[tier] and Car[tier].Mult) or 1
+	return math.floor(PRIX_BASE * mult + 0.5), tier
+end
+
+-- v55 : achat aux ENCHERES (module Enchere : E = acheter / surencherir x1,5 par tour de 10 s, F = Robux). Les verifications
+-- restent ici : plot choisi, voiture encore sur l'anneau, trajet vers le plot ; l'argent est pris par Enchere a la fin du tour.
+local okE, Enchere = pcall(function() return require(ServerScriptService:WaitForChild("Enchere", 10)) end)
+if not okE then warn("[Ambiance] module Enchere introuvable : " .. tostring(Enchere)); Enchere = nil end
+
+local function invite(voiture, nomModele, prix, tier, etat)
+	if not Enchere then return end
+	Enchere.Equiper(voiture, {
+		nom = nomModele, tier = tier, prix = prix,
+		peutAcheter = function(player)
+			if etat.achat or voiture:GetAttribute("Proprietaire") then return false, "Déjà vendue" end
+			if not voiture:GetAttribute("SurAnneau") then return false, "Trop tard : elle quitte le centre" end
+			local spawnFolder = CarManager.PlotDe(player)
+			if not spawnFolder then return false, "Choisis d'abord ton plot" end
+			if not (Routes.Achat and Routes.Achat[spawnFolder.Name]) then return false, "Pas de trajet vers ce plot" end
+			return true
+		end,
+		gagne = function(player, prixPaye)
+			local spawnFolder = CarManager.PlotDe(player)
+			local T = spawnFolder and Routes.Achat and Routes.Achat[spawnFolder.Name]
+			if not T then return end
+			voiture:SetAttribute("Proprietaire", player.UserId)
+			voiture:SetAttribute("Achetee", true)
+			voiture:SetAttribute("Tier", tier)
+			voiture:SetAttribute("Name", nomModele)
+			voiture:SetAttribute("VaVers", spawnFolder.Name)
+			etat.achat = {joueur = player, trajet = T}
+			print(("[Ambiance] %s remporte %s (%s) pour %d $ -> %s"):format(player.Name, nomModele, tier, prixPaye or 0, spawnFolder.Name))
+		end,
+	})
+end
+
+local function lancer(nomUsine, route, nomModele, couleur, id)
+	local modele = modeles:FindFirstChild(nomModele)
+	if not modele then warn("[Ambiance] modele " .. tostring(nomModele) .. " introuvable dans VoituresModeles") return end
+	local voiture = CarManager.SpawnCar(modele)
+	peindre(voiture, couleur)
+	local prix, tier = prixDe(nomModele)
+	voiture.Name = "Ambiance_" .. nomUsine .. "_" .. nomModele
+	voiture:SetAttribute("Ambiance", true)
+	voiture:SetAttribute("Modele", nomModele)
+	voiture:SetAttribute("NumeroChaine", id)
+	voiture:SetAttribute("Prix", prix)
+	voiture.Parent = dossier
+	local etat = {}
+	invite(voiture, nomModele, prix, tier, etat)
+	actives[nomUsine] += 1
+	derniere[nomUsine] = os.clock()
+	task.spawn(function()
+		local ok, r = pcall(trajet, voiture, route, nomUsine, etat)
+		if not ok then warn("[Ambiance] " .. tostring(r)) end
+		if r ~= "achetee" then
+			if voiture.Parent then voiture:Destroy() end
+			actives[nomUsine] -= 1
+		end
+	end)
+end
+
+-- usines = entrees de Routes autres que "Achat" (trajets des voitures achetees, par plot)
+local Usines = {}
+for _, nom in ipairs({"NE", "NO", "SE", "SO"}) do if Routes[nom] then Usines[nom] = Routes[nom] end end   -- v49 : seulement les 4 usines (Achat, Livraison, LivraisonInfos, Garages sont d'autres tables)
+for nomUsine in pairs(Usines) do actives[nomUsine] = 0; derniere[nomUsine] = -math.huge end
+
+if D and D.CYCLE and D.VOITURES and #D.VOITURES > 0 then
+	-- synchronise sur la chaine : a l'instant ou la voiture de sortie disparait dans la lumiere (sortie.arrivee)
+	local T_SORTIE = (D.EVENEMENTS and D.EVENEMENTS.sortie and D.EVENEMENTS.sortie.arrivee) or (D.CYCLE - 3)
+	local dernierCycle = nil
+	task.spawn(function()
+		while true do
+			local u = (workspace:GetServerTimeNow() - (D.PHASE or 0)) / D.CYCLE
+			local n = math.floor(u)
+			local tc = (u - n) * D.CYCLE
+			if tc >= T_SORTIE and n ~= dernierCycle then
+				dernierCycle = n
+				local nomModele, couleur, id = voitureDeSortie(n)
+				for nomUsine, route in pairs(Usines) do
+					if actives[nomUsine] < MAX_PAR_USINE and os.clock() - derniere[nomUsine] >= CADENCE_MIN then
+						lancer(nomUsine, route, nomModele, couleur, id)
+					end
+				end
+			end
+			task.wait(0.25)
+		end
+	end)
+else
+	-- secours (pas de donnees de chaine) : une voiture au hasard de temps en temps
+	warn("[Ambiance] pas de synchronisation avec la chaine : cadence fixe")
+	for nomUsine, route in pairs(Usines) do
+		task.spawn(function()
+			task.wait(math.random(3, 12))
+			while true do
+				if actives[nomUsine] < MAX_PAR_USINE then
+					local liste = modeles:GetChildren()
+					if #liste > 0 then
+						local m = liste[math.random(1, #liste)]
+						lancer(nomUsine, route, m.Name, COULEURS[math.random(1, #COULEURS)], 0)
+					end
+				end
+				task.wait(math.random(CADENCE_MIN, CADENCE_MIN + 20))
+			end
+		end)
+	end
+end

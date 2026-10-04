@@ -1,0 +1,54 @@
+-- PortesSas : Script (ServerScriptService). V18 : portes coulissantes automatiques des sas d'entree
+-- des 4 chaines de production (2 portes l'une derriere l'autre de chaque cote du portail).
+-- Chaque porte est un Model tague "PorteCoulissante" (cree par InstallerMap, dossier
+-- Workspace.PortesSas) : ses pieces portent les attributs Ferme / Ouvert (CFrame) et Bloque (la
+-- vitre, qui fait la collision quand la porte est fermee). La porte s'ouvre quand un joueur est a
+-- moins de RAYON studs de son milieu et se referme quand plus personne n'est proche.
+local CS = game:GetService("CollectionService")
+local TS = game:GetService("TweenService")
+local Players = game:GetService("Players")
+
+local RAYON = 16
+local OUVRIR = TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local FERMER = TweenInfo.new(0.9, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut)
+local etat = {}
+
+local function bouger(porte, ouvrir)
+	if etat[porte] == ouvrir then return end
+	etat[porte] = ouvrir
+	for _, p in ipairs(porte:GetDescendants()) do
+		if p:IsA("BasePart") then
+			local ferme, ouvert = p:GetAttribute("Ferme"), p:GetAttribute("Ouvert")
+			if ferme and ouvert then
+				TS:Create(p, ouvrir and OUVRIR or FERMER, {CFrame = ouvrir and ouvert or ferme}):Play()
+				if p:GetAttribute("Bloque") then p.CanCollide = not ouvrir end
+			end
+		end
+	end
+end
+
+CS:GetInstanceRemovedSignal("PorteCoulissante"):Connect(function(porte) etat[porte] = nil end)
+
+while true do
+	local pos = {}
+	for _, j in ipairs(Players:GetPlayers()) do
+		local c = j.Character
+		local r = c and c:FindFirstChild("HumanoidRootPart")
+		if r then table.insert(pos, r.Position) end
+	end
+	for _, porte in ipairs(CS:GetTagged("PorteCoulissante")) do
+		local centre = porte:GetAttribute("Centre")
+		if centre then
+			local proche = false
+			for _, q in ipairs(pos) do
+				local dx, dz = q.X - centre.X, q.Z - centre.Z
+				if dx * dx + dz * dz < RAYON * RAYON and math.abs(q.Y - centre.Y) < 25 then
+					proche = true
+					break
+				end
+			end
+			bouger(porte, proche)
+		end
+	end
+	task.wait(0.15)
+end

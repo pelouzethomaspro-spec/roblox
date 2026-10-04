@@ -1,0 +1,149 @@
+--[[ FoudreServeur   (ModuleScript, ServerScriptService > FoudreServeur)
+	Le serveur ne fait que designer les voitures touchees (etiquette "Electrifiee" + attribut "FoudreT") :
+	tous les effets sont calcules chez chaque joueur (StarterPlayerScripts > FoudreClient). Cout serveur : quasi nul.
+
+	Utilisation (depuis ton systeme d'admin abuse, un Script serveur) :
+		local Foudre = require(game:GetService("ServerScriptService").FoudreServeur)
+		Foudre.orage()                     -- l'orage commence : un eclair toutes les 4 a 9 s sur une voiture au hasard
+		Foudre.orage({intervalle = {2, 5}, parFrappe = 2, duree = 120, occupeesSeulement = true})
+		Foudre.finOrage()                  -- fin de l'orage : toutes les voitures redeviennent normales
+		Foudre.frapper(voiture)            -- un eclair sur une voiture precise (Model, ou une piece de la voiture)
+		Foudre.eteindre(voiture)           -- une voiture redevient normale
+		Foudre.hasard({intervalle = {90, 240}, duree = 30})   -- en permanence : de temps en temps un eclair frappe
+		                                   -- une voiture au hasard, qui reste electrique 30 s (voir le Script FoudreHasard)
+		Foudre.arreterHasard()
+	Pendant un orage, les voitures touchees restent electrifiees jusqu'a la fin de l'orage.
+]]
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local TAG = "Electrifiee"
+local Foudre = {}
+
+local dossier = ReplicatedStorage:FindFirstChild("Foudre")
+local evSol = dossier and dossier:FindFirstChild("FoudreSol")
+if dossier and not evSol then
+	evSol = Instance.new("RemoteEvent"); evSol.Name = "FoudreSol"; evSol.Parent = dossier
+end
+
+-- voiture = le Model le plus haut qui contient la piece donnee (sous Workspace ou un dossier)
+local function modeleDe(x)
+	if typeof(x) ~= "Instance" then return nil end
+	local m = x:IsA("Model") and x or x:FindFirstAncestorWhichIsA("Model")
+	if not m then return nil end
+	while m.Parent and m.Parent ~= workspace and m.Parent:IsA("Model") do m = m.Parent end
+	return m
+end
+
+-- voitures du jeu : tous les modeles qui contiennent un VehicleSeat
+function Foudre.voitures(occupeesSeulement)
+	local liste, vus = {}, {}
+	for _, d in ipairs(workspace:GetDescendants()) do
+		if d:IsA("VehicleSeat") and (not occupeesSeulement or d.Occupant ~= nil) then
+			local m = modeleDe(d)
+			if m and not vus[m] then vus[m] = true; table.insert(liste, m) end
+		end
+	end
+	return liste
+end
+
+-- duree (facultatif) : la voiture redevient normale apres ce nombre de secondes (sinon : jusqu'a Foudre.eteindre)
+function Foudre.frapper(voiture, duree)
+	local m = modeleDe(voiture)
+	if not m then return false end
+	local t = workspace:GetServerTimeNow()
+	m:SetAttribute("FoudreT", t)   -- declenche l'eclair chez les joueurs
+	CollectionService:AddTag(m, TAG)
+	if duree then
+		task.delay(duree, function()
+			-- pas d'extinction si la voiture a ete refrappee entre-temps (le nouvel eclair relance le compte)
+			if m.Parent and m:GetAttribute("FoudreT") == t then Foudre.eteindre(m) end
+		end)
+	end
+	return true
+end
+
+function Foudre.eteindre(voiture)
+	local m = modeleDe(voiture)
+	if not m then return end
+	CollectionService:RemoveTag(m, TAG)
+	m:SetAttribute("FoudreT", nil)
+end
+
+function Foudre.eteindreTout()
+	for _, m in ipairs(CollectionService:GetTagged(TAG)) do Foudre.eteindre(m) end
+end
+
+-- eclair dans le vide (ambiance) : touche le sol a cette position
+function Foudre.eclairSol(position)
+	if evSol then evSol:FireAllClients(position) end
+end
+
+local orageId = 0
+function Foudre.orage(options)
+	options = options or {}
+	local iv = options.intervalle or {4, 9}
+	local parFrappe = options.parFrappe or 1
+	local chercher = options.voitures or function() return Foudre.voitures(options.occupeesSeulement) end
+	local vide = options.eclairsDansLeVide ~= false
+	orageId += 1
+	local id = orageId
+	if options.ambiance ~= false then workspace:SetAttribute("FoudreOrage", true) end
+	local debut = os.clock()
+	task.spawn(function()
+		local rng = Random.new()
+		while orageId == id do
+			task.wait(rng:NextNumber(iv[1], iv[2]))
+			if orageId ~= id then break end
+			if options.duree and os.clock() - debut > options.duree then Foudre.finOrage() break end
+			local liste = chercher()
+			for _ = 1, math.min(parFrappe, #liste) do
+				local i = rng:NextInteger(1, #liste)
+				Foudre.frapper(liste[i], options.dureeCharge)
+				table.remove(liste, i)
+			end
+			-- de temps en temps un eclair tombe a cote d'un joueur (ambiance)
+			if vide and rng:NextNumber() < 0.5 then
+				local joueurs = game:GetService("Players"):GetPlayers()
+				local j = joueurs[rng:NextInteger(1, math.max(1, #joueurs))]
+				local hrp = j and j.Character and j.Character:FindFirstChild("HumanoidRootPart")
+				if hrp then
+					local a = rng:NextNumber(0, 2 * math.pi); local r = rng:NextNumber(60, 180)
+					local p = hrp.Position + Vector3.new(math.cos(a) * r, 0, math.sin(a) * r)
+					local hit = workspace:Raycast(p + Vector3.new(0, 300, 0), Vector3.new(0, -700, 0))
+					if hit then Foudre.eclairSol(hit.Position) end
+				end
+			end
+		end
+	end)
+end
+
+-- mode permanent : de temps en temps, un eclair frappe une voiture au hasard, qui reste electrique "duree" secondes.
+-- Independant de l'orage (Foudre.orage / finOrage), pas d'assombrissement du ciel.
+local hasardId = 0
+function Foudre.hasard(options)
+	options = options or {}
+	local iv = options.intervalle or {90, 240}
+	local duree = options.duree or 30
+	local chercher = options.voitures or function() return Foudre.voitures(options.occupeesSeulement) end
+	hasardId += 1
+	local id = hasardId
+	task.spawn(function()
+		local rng = Random.new()
+		while hasardId == id do
+			task.wait(rng:NextNumber(iv[1], iv[2]))
+			if hasardId ~= id then break end
+			local liste = chercher()
+			if #liste > 0 then Foudre.frapper(liste[rng:NextInteger(1, #liste)], duree) end
+		end
+	end)
+end
+function Foudre.arreterHasard() hasardId += 1 end
+
+function Foudre.finOrage()
+	orageId += 1
+	workspace:SetAttribute("FoudreOrage", nil)
+	Foudre.eteindreTout()
+end
+
+return Foudre

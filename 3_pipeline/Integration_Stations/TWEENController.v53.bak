@@ -1,0 +1,312 @@
+--[[ TWEENController (LocalScript, StarterPlayerScripts)
+	Tout le mouvement visible des PNJ et des voitures se joue ICI, chez chaque joueur. Le serveur ne fait qu'annoncer
+	"cette voiture va a ce point en N secondes" (MoveCarEvent) et pose la voiture a l'arrivee : il ne calcule aucune
+	image intermediaire, ne touche jamais aux roues ni aux sons.
+
+	Voitures :
+	  - trajet le long d'une courbe de Bezier (le Root de la voiture regarde toujours vers l'avant du modele) ;
+	  - roues : elles tournent d'apres la distance parcourue a chaque image (angle = distance / rayon), autour de
+	    l'axe lateral de la voiture ; les pieces des roues sont detachees localement de la soudure (ancrees) et posees
+	    chaque image par rapport au Root -> aucun calcul physique, aucune replication ;
+	  - moteur : un Sound 3D local par voiture, en boucle, dont la hauteur et le volume suivent la vitesse
+	    (ralenti a l'arret). Cree a la premiere mise en mouvement, detruit avec la voiture.
+	Cout : quelques CFrame par roue et par image, uniquement pour les voitures en train de rouler.
+]]
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+
+local MovePnjEvent = ReplicatedStorage:WaitForChild("MovePnjEvent")
+local MoveCarEvent = ReplicatedStorage:WaitForChild("MoveCarEvent")
+
+-- Son du moteur : le meme "Go Kart Engine Constant 2" (son libre Roblox) que les stations (Stations/Sons.moteurVoiture),
+-- joue grave. Pour en changer : remplace l'ID (asset audio publie sur ton compte ou son libre de la boutique) ; "" = aucun son.
+local SON_MOTEUR = {
+	id = "rbxassetid://9112787518",
+	volume = 0.22,                -- volume en roulant (au ralenti : la moitie)
+	hauteurArret = 0.5,           -- PlaybackSpeed au ralenti
+	hauteurRoute = 0.9,           -- PlaybackSpeed a la vitesse de croisiere (45 studs/s)
+	porteeMin = 20,               -- distance (studs) sans attenuation
+	porteeMax = 180,              -- distance au-dela de laquelle on n'entend plus rien
+}
+local VITESSE_CROISIERE = 32      -- studs/s : vitesse des trajets calcules par le serveur (CarManager.VITESSE)
+
+-- ======================================================================================================================
+-- PNJ (inchange) : tween lineaire + animation de marche
+-- ======================================================================================================================
+local PnjAnimations = {}
+
+MovePnjEvent.OnClientEvent:Connect(function(pnj, cible, duree, etatanimation)
+	if not pnj or not pnj.PrimaryPart then return end
+
+	local humanoid = pnj:FindFirstChild("Humanoid")
+	local animator = humanoid and humanoid:FindFirstChild("Animator")
+
+	local animation = pnj:FindFirstChild("Marche")
+	if not animator or not animation then return end
+
+	local track = PnjAnimations[pnj]
+	if not track then
+		track = animator:LoadAnimation(animation)
+		PnjAnimations[pnj] = track
+	end
+
+	if (etatanimation == 0 or etatanimation == 3) then
+		track:Play()
+	end
+
+	local root = pnj.PrimaryPart
+	local offset = pnj:GetPivot():ToObjectSpace(root.CFrame)
+	local cibleRoot = cible * offset
+
+	local tweenInfo = TweenInfo.new(duree, Enum.EasingStyle.Linear)
+	local tween = TweenService:Create(pnj.PrimaryPart, tweenInfo, {CFrame = cibleRoot})
+	tween:Play()
+
+	if etatanimation == 2 or etatanimation == 3 then
+		tween.Completed:Once(function()
+			if track.IsPlaying then
+				track:Stop()
+			end
+			PnjAnimations[pnj] = nil
+		end)
+	end
+end)
+
+-- ======================================================================================================================
+-- VOITURES : roues et moteur
+-- ======================================================================================================================
+local Voitures = {}          -- [car] = { root, roues = { {parts = {{part, offset}}, centre = Vector3, rayon} }, angle, son, vitesse, enTrajet, tween }
+
+local function estRoue(n)
+	n = string.lower(n)
+	return n:find("wheel") or n:find("roue") or n:find("pneu") or n:find("tire") or n:find("tyre")
+end
+
+-- groupes de roues : un Model "Roue_AVG" regroupe ses pieces ; sinon les pieces "Roue_AVG_1", "Roue_AVG_2"... ensemble
+local function groupesRoues(car, root)
+	local groupes, ordre = {}, {}
+	for _, p in ipairs(car:GetDescendants()) do
+		if p:IsA("BasePart") and p ~= root then
+			local a, cle = p.Parent, nil
+			while a and a ~= car do
+				if a:IsA("Model") and estRoue(a.Name) then cle = a.Name end
+				a = a.Parent
+			end
+			if not cle and estRoue(p.Name) then cle = (p.Name:gsub("[_%s%-]*%d+$", "")) end
+			if cle then
+				if not groupes[cle] then groupes[cle] = {}; table.insert(ordre, cle) end
+				table.insert(groupes[cle], p)
+			end
+		end
+	end
+	return groupes, ordre
+end
+
+local function preparerVoiture(car, root)
+	local V = Voitures[car]
+	if V and V.root == root then return V end
+	V = { root = root, roues = {}, angle = 0, vitesse = 0, enTrajet = false }
+	local groupes, ordre = groupesRoues(car, root)
+	local rootCF = root.CFrame
+	for _, cle in ipairs(ordre) do
+		local parts = groupes[cle]
+		local somme, rayon = Vector3.zero, 0
+		for _, p in ipairs(parts) do somme += p.Position; rayon = math.max(rayon, math.max(p.Size.X, p.Size.Y, p.Size.Z) / 2) end
+		local centre = rootCF:PointToObjectSpace(somme / #parts)
+		local roue = { parts = {}, centre = centre, rayon = math.max(rayon, 0.4) }
+		for _, p in ipairs(parts) do
+			p.Anchored = true                                 -- local : la roue n'est plus tiree par la soudure, on la pose nous-memes
+			table.insert(roue.parts, { part = p, offset = rootCF:ToObjectSpace(p.CFrame) })
+		end
+		table.insert(V.roues, roue)
+	end
+	Voitures[car] = V
+	car.AncestryChanged:Connect(function(_, parent)
+		if parent == nil then
+			if V.son then V.son:Destroy() end
+			if V.tween then V.tween:Cancel() end
+			Voitures[car] = nil
+		end
+	end)
+	return V
+end
+
+-- pose les roues par rapport au Root, tournees de V.angle autour de l'axe lateral (X du Root)
+local function poserRoues(V)
+	local rootCF = V.root.CFrame
+	for _, roue in ipairs(V.roues) do
+		local rot = CFrame.new(roue.centre) * CFrame.Angles(V.angle, 0, 0) * CFrame.new(-roue.centre)
+		for _, e in ipairs(roue.parts) do
+			if e.part.Parent then e.part.CFrame = rootCF * rot * e.offset end
+		end
+	end
+end
+
+local function avancerRoues(V, distance)
+	if #V.roues == 0 or distance <= 0 then return end
+	-- en roulant vers l'avant (-Z du Root), le dessus de la roue part vers l'avant : rotation negative autour de +X
+	V.angle -= distance / V.roues[1].rayon
+	if V.angle < -math.pi * 2 then V.angle += math.pi * 2 end
+	poserRoues(V)
+end
+
+local function moteur(V)
+	if SON_MOTEUR.id == "" then return nil end
+	if V.son and V.son.Parent then return V.son end
+	local s = Instance.new("Sound")
+	s.Name = "Moteur"
+	s.SoundId = SON_MOTEUR.id
+	s.Looped = true
+	s.Volume = SON_MOTEUR.volume * 0.5
+	s.PlaybackSpeed = SON_MOTEUR.hauteurArret
+	s.RollOffMode = Enum.RollOffMode.InverseTapered
+	s.RollOffMinDistance = SON_MOTEUR.porteeMin
+	s.RollOffMaxDistance = SON_MOTEUR.porteeMax
+	s.Parent = V.root
+	s:Play()
+	V.son = s
+	return s
+end
+
+-- le moteur suit la vitesse (lissage) ; boucle legere : seulement les voitures qui ont un son
+RunService.Heartbeat:Connect(function(dt)
+	local k = math.min(1, dt * 4)
+	for car, V in pairs(Voitures) do
+		local s = V.son
+		if s and s.Parent then
+			local cible = V.enTrajet and math.clamp(V.vitesse / VITESSE_CROISIERE, 0, 1.6) or 0
+			local hauteur = SON_MOTEUR.hauteurArret + (SON_MOTEUR.hauteurRoute - SON_MOTEUR.hauteurArret) * cible
+			local volume = SON_MOTEUR.volume * (0.5 + 0.5 * math.min(cible, 1))
+			s.PlaybackSpeed += (hauteur - s.PlaybackSpeed) * k
+			s.Volume += (volume - s.Volume) * k
+		end
+	end
+end)
+
+-- ======================================================================================================================
+-- VOITURES : trajet
+-- ======================================================================================================================
+local function CalculerBezierCubique(t, p0, controle1, controle2, p2)
+	local u = 1 - t
+	return u^3 * p0 + 3 * u^2 * t * controle1 + 3 * u * t^2 * controle2 + t^3 * p2
+end
+
+local function CalculerDirectionCubique(t, p0, controle1, controle2, p2)
+	local u = 1 - t
+	return 3 * u^2 * (controle1 - p0) + 6 * u * t * (controle2 - controle1) + 3 * t^2 * (p2 - controle2)
+end
+
+-- ======================================================================================================================
+-- DERAPAGE (etat 4, camion de livraison v49) : survirage (le nez pointe vers l'interieur du virage, la voiture glisse le
+-- long de sa trajectoire) + fumee des pneus arriere. L'angle monte puis redescend sur le segment (sin).
+-- ======================================================================================================================
+local DERAPAGE_ANGLE = math.rad(28)
+local function fumee(V, actif)
+	if actif and not V.fumee then
+		local root = V.root
+		local car = root.Parent
+		local _, taille = car:GetBoundingBox()
+		local arriere = taille.Z / 2 - 2
+		local liste = {}
+		for _, x in ipairs({-taille.X / 2 + 1, taille.X / 2 - 1}) do
+			local a = Instance.new("Attachment")
+			a.Name = "Derapage"; a.Position = Vector3.new(x, 0.3, arriere); a.Parent = root
+			local e = Instance.new("ParticleEmitter")
+			e.Texture = "rbxasset://textures/particles/smoke_main.dds"
+			e.Color = ColorSequence.new(Color3.fromRGB(235, 235, 235))
+			e.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.45), NumberSequenceKeypoint.new(1, 1)})
+			e.Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 2.5), NumberSequenceKeypoint.new(1, 7)})
+			e.Lifetime = NumberRange.new(0.6, 1.1); e.Rate = 45; e.Speed = NumberRange.new(2, 5)
+			e.SpreadAngle = Vector2.new(35, 35); e.Rotation = NumberRange.new(0, 360); e.RotSpeed = NumberRange.new(-60, 60)
+			e.LightEmission = 0.1; e.EmissionDirection = Enum.NormalId.Back; e.Parent = a
+			table.insert(liste, a)
+		end
+		V.fumee = liste
+	elseif not actif and V.fumee then
+		for _, a in ipairs(V.fumee) do
+			for _, e in ipairs(a:GetChildren()) do if e:IsA("ParticleEmitter") then e.Enabled = false end end
+			task.delay(1.5, function() a:Destroy() end)
+		end
+		V.fumee = nil
+	end
+end
+
+MoveCarEvent.OnClientEvent:Connect(function(car, cible, duree, etatanimation)
+	if not car or not car.PrimaryPart then return end
+
+	local root = car.PrimaryPart
+	local V = preparerVoiture(car, root)
+	if V.tween then V.tween:Cancel(); V.tween = nil end
+	moteur(V)
+	local derapage = (etatanimation == 4)
+	fumee(V, derapage)
+	-- sens du virage : vers la gauche (+) ou la droite (-) ; le nez tourne du meme cote (survirage)
+	local sens = 0
+	if derapage then
+		local d0, d1 = root.CFrame.LookVector, cible.LookVector
+		local c = d0.X * d1.Z - d0.Z * d1.X
+		sens = (c > 0) and 1 or -1
+		if math.abs(c) < 0.05 then sens = (V.sensDerapage or 1) end
+		V.sensDerapage = sens
+	end
+
+	local style = Enum.EasingStyle.Linear
+	if etatanimation == 1 or etatanimation == 2 then
+		style = Enum.EasingStyle.Sine
+	end
+	local tweenInfo = TweenInfo.new(duree, style, Enum.EasingDirection.Out)
+
+	local depart = root.CFrame
+	local p0 = depart.Position
+	local p2 = cible.Position
+
+	local k = (p2 - p0).Magnitude * 0.39
+	local controle1 = p0 + depart.LookVector * k   -- devant la voiture
+	local controle2 = p2 - cible.LookVector * k    -- derriere le node d'arrivee
+
+	local t = Instance.new("NumberValue")
+	t.Value = 0
+	local precedent = p0
+	local horloge = os.clock()
+	V.enTrajet = true
+
+	local connection
+	connection = t.Changed:Connect(function(valeur)
+		local position = CalculerBezierCubique(valeur, p0, controle1, controle2, p2)
+		local direction = CalculerDirectionCubique(valeur, p0, controle1, controle2, p2)
+
+		if direction.Magnitude > 0.001 then
+			local cf = CFrame.lookAt(position, position + direction)
+			if derapage then
+				local a = DERAPAGE_ANGLE * math.sin(math.pi * valeur) * sens
+				cf = cf * CFrame.Angles(0, a, 0) * CFrame.Angles(0, 0, -a * 0.25)      -- survirage + leger roulis
+			end
+			root.CFrame = cf
+		end
+		local distance = (position - precedent).Magnitude
+		local maintenant = os.clock()
+		local dt = maintenant - horloge
+		if dt > 0 then V.vitesse = distance / dt end
+		horloge = maintenant
+		precedent = position
+		avancerRoues(V, distance)
+	end)
+
+	local tween = TweenService:Create(t, tweenInfo, {Value = 1})
+	V.tween = tween
+	tween:Play()
+
+	tween.Completed:Once(function(etat)
+		connection:Disconnect()
+		t:Destroy()
+		if V.tween == tween then V.tween = nil end
+		if etat == Enum.PlaybackState.Completed then
+			root.CFrame = cible
+			poserRoues(V)
+		end
+		if derapage and etat ~= Enum.PlaybackState.Cancelled then fumee(V, false) end
+		V.enTrajet = false
+		V.vitesse = 0
+	end)
+end)

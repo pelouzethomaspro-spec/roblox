@@ -1,0 +1,27 @@
+﻿element;metres;studs;remarque
+Personnage (thamary4, mesure en jeu : 6,48 studs);1.41;6.48;dans l'echelle des voitures (4,59 studs/m) ton perso 'mesure' 1,41 m au lieu de 1,75 : les voitures paraissent 24 % plus grandes que dans la realite (c'est ton choix des 22 studs)
+Personnage Roblox classique (R15, echelles 1 : ~5 studs);1.09;5.0;un joueur avec un avatar classique paraitra encore plus petit a cote des voitures
+Voie de circulation (map : 15 studs);3.27;15;= 3,27 m : voie reelle 3,0-3,5 m -> OK
+Chaussee 2 voies (map : 30 studs);6.54;30;= 6,5 m : OK
+Trottoir V17m (map : 10,85 studs);2.36;10.85;= 2,36 m : trottoir reel 1,5-3 m -> OK
+Case de plot (10 studs);2.18;10;= 2,18 m : une voie de 10 studs = 2,2 m, trop etroite pour une voiture de 9-11 studs de large (voir § routes du plot)
+Route interne du plot (2 cases = 20 studs);4.36;20;= 4,36 m pour 2 sens : reel mini 5,5-6 m -> passer a 3 cases (30) ou accepter que les voitures se frolent
+Station 3 x 3 cases (30 studs);6.54;30;"= 6,5 m de cote ; la plus longue voiture (Urus 23,5) laisse 3,2 studs de chaque cote"
+Entree / sortie du plot (3 cases = 30 studs);6.54;30;= 6,5 m : OK pour le fourgon (27,2 de long, 9,3 de large)
+Plot entier 35 x 55 cases;76.27;350;350 x 550 studs = 76 x 120 m (~0,9 ha)
+Rond-point central (rayon ext. 172,9);37.68;172.9;= 37,7 m de rayon : grand rond-point urbain reel 20-40 m -> OK
+Anneau du rond-point (30 studs);6.54;30;= 6,5 m -> OK pour 2 voies
+Map entiere (2 697 studs);587.7;2697;= 588 m de cote (35 ha)
+Bouche de tunnel a 1 200,5 studs;261.6;1200.5;= 262 m du centre
+Porte de batiment (2,1 m);2.1;9.6;a viser pour les stations / garages pietons
+Porte de garage voiture (2,4 m haut x 3 m large);2.4;11.0;"haut. 11 studs ; largeur 3 m = 13,8 studs ; le fourgon fait 12,4 de haut -> porte fourgon >= 3 m = 13,8 studs"
+Hauteur d'un etage (3 m);3.0;13.8;13,8 studs par etage
+Place de parking (2,5 x 5 m);5.0;22.9;"11,5 x 23 studs ; la Urus (23,5) deborde un peu -> prevoir 25 studs"
+Bordure de trottoir (15 cm);0.15;0.7;0,7 stud
+Lampadaire (8 m);8.0;36.7;36,7 studs
+Arbre moyen (10 m);10.0;45.9;45,9 studs
+Feu tricolore (4 m);4.0;18.4;18,4 studs
+Voiture sur la chaine de production (36 studs);7.84;36;= 7,8 m : 1,64 x plus grande que la meme voiture en jeu (22) - gabarit des robots, a reduire si tu veux l'accorder
+Vitesse sur route (32 studs/s);6.97;32;"= 7 m/s = 25 km/h ; 50 km/h serait 64 studs/s"
+Vitesse dans le plot (11 studs/s);2.4;11;= 2,4 m/s = 8,6 km/h
+Marche du joueur (16 studs/s par defaut);3.49;16;"= 3,5 m/s = 12,6 km/h (un peu rapide ; marche reelle 5 km/h = 6,4 studs/s)"

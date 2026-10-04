@@ -1,0 +1,72 @@
+<roblox version="4">
+<Item class="ModuleScript"><Properties><string name="Name">MetalServeur</string><ProtectedString name="Source">--[[ MetalServeur   (ModuleScript, ServerScriptService &gt; MetalServeur)
+	Transforme des voitures en OR ou en ARGENT. Le serveur ne pose qu'un attribut sur la voiture ("Metal" = "Or" ou
+	"Argent", + "MetalT" = instant) : l'animation et le changement de matiere sont faits chez chaque joueur
+	(StarterPlayerScripts &gt; MetalClient). Les joueurs qui arrivent plus tard voient directement la voiture en metal.
+
+	Utilisation (Script serveur : admin abuse, boutique, recompense...) :
+		local Metal = require(game:GetService("ServerScriptService").MetalServeur)
+		Metal.transformer(voiture, "Or")          -- voiture (Model, ou une piece de la voiture) -&gt; or, jusqu'a retablir
+		Metal.transformer(voiture, "Argent", 60)  -- argent pendant 60 s, puis la voiture reprend ses couleurs
+		Metal.retablir(voiture)                   -- la voiture reprend ses couleurs d'origine
+		Metal.toutes("Or", 120)                   -- toutes les voitures en or pendant 2 min (admin abuse)
+		Metal.retablirTout()
+]]
+local CollectionService = game:GetService("CollectionService")
+local Metal = {}
+local VARIANTES = {Or = true, Argent = true}
+
+local function modeleDe(x)
+	if typeof(x) ~= "Instance" then return nil end
+	local m = x:IsA("Model") and x or x:FindFirstAncestorWhichIsA("Model")
+	if not m then return nil end
+	while m.Parent and m.Parent ~= workspace and m.Parent:IsA("Model") do m = m.Parent end
+	return m
+end
+
+function Metal.voitures(occupeesSeulement)
+	local liste, vus = {}, {}
+	for _, d in ipairs(workspace:GetDescendants()) do
+		if d:IsA("VehicleSeat") and (not occupeesSeulement or d.Occupant ~= nil) then
+			local m = modeleDe(d)
+			if m and not vus[m] then vus[m] = true; table.insert(liste, m) end
+		end
+	end
+	return liste
+end
+
+function Metal.transformer(voiture, variante, duree)
+	local m = modeleDe(voiture)
+	variante = variante or "Or"
+	if not m or not VARIANTES[variante] then return false end
+	local t = workspace:GetServerTimeNow()
+	m:SetAttribute("Metal", variante)
+	m:SetAttribute("MetalT", t)
+	CollectionService:AddTag(m, "Metal")
+	if duree then
+		task.delay(duree, function()
+			if m.Parent and m:GetAttribute("MetalT") == t then Metal.retablir(m) end
+		end)
+	end
+	return true
+end
+
+function Metal.retablir(voiture)
+	local m = modeleDe(voiture)
+	if not m then return end
+	CollectionService:RemoveTag(m, "Metal")
+	m:SetAttribute("Metal", nil)
+	m:SetAttribute("MetalT", nil)
+end
+
+function Metal.toutes(variante, duree, occupeesSeulement)
+	for _, m in ipairs(Metal.voitures(occupeesSeulement)) do Metal.transformer(m, variante, duree) end
+end
+
+function Metal.retablirTout()
+	for _, m in ipairs(CollectionService:GetTagged("Metal")) do Metal.retablir(m) end
+end
+
+return Metal
+</ProtectedString></Properties></Item>
+</roblox>

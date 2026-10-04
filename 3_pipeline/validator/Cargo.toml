@@ -1,0 +1,9 @@
+[package]
+name = "validator"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rbx_binary = "3"
+rbx_dom_weak = "4.2.0"
+rbx_xml = "3"

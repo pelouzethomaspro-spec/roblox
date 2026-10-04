@@ -1,0 +1,118 @@
+--[[ InstallerHerbe (ModuleScript, ServerStorage) — le sol de la map en Terrain Roblox : herbe realiste (brins animes),
+	Terrain Ground (plat, meme vert) sous tout ce qui est construit, eau du bassin.
+	Appele a CHAQUE lancement du serveur par Lancement (le terrain est refait en ~1 s : il n'a plus besoin d'etre cuit dans
+	la place) et par InstallerMap lors de l'installation de la map.  require(game.ServerStorage.InstallerHerbe)()
+
+	Regles :
+	  - nappe d'herbe (Grass) sur toute la map, dessus nominal a Y = -2 : Roblox dessine la surface du terrain ~2 studs
+	    au-dessus du haut nominal d'un bloc rempli, la surface est donc a Y = 0 (sous les routes a 0,57) ;
+	  - Ground (pas de brins) sous les boites / cylindres / plans de collision de la map (routes, trottoirs, batiments,
+	    ilots, cours, acces des plots) avec 2 studs de marge, et sous les tabliers de bitume des acces des plots ;
+	  - les PLOTS restent en herbe : PlotManager met du Ground case par case sous chaque dalle de sol posee par un joueur ;
+	  - hexagone d'eau du bassin du monument.
+]]
+local SS = game:GetService("ServerStorage")
+
+return function(centre)
+	centre = centre or CFrame.new(0, 0, 0)
+	local D = require(SS:WaitForChild("DonneesArbres"))
+	local C = require(SS:WaitForChild("DonneesCollisions"))
+	local T = workspace.Terrain
+	local function essayer(f) pcall(f) end
+	local t0 = os.clock()
+
+	T:Clear()
+	local demi = (D.carte and D.carte.demi) or 1348
+	local VERT = Color3.fromRGB(111, 126, 62)
+	essayer(function() T.Decoration = true end)
+	essayer(function() T.GrassLength = 0.7 end)
+	essayer(function() T:SetMaterialColor(Enum.Material.Grass, VERT) end)
+	essayer(function() T:SetMaterialColor(Enum.Material.Ground, VERT) end)
+
+	-- 1. nappe d'herbe : dessus nominal a Y = -2 (surface dessinee a 0), 8 studs d'epaisseur, tuiles de 512 studs
+	local Y_T = -2
+	local pas = 512
+	local n = math.ceil(2 * demi / pas)
+	for i = 0, n - 1 do
+		for j = 0, n - 1 do
+			local x0, z0 = -demi + i * pas, -demi + j * pas
+			local sx, sz = math.min(pas, demi - x0), math.min(pas, demi - z0)
+			T:FillBlock(centre * CFrame.new(x0 + sx / 2, -4 + Y_T, z0 + sz / 2), Vector3.new(sx, 8, sz), Enum.Material.Grass)
+		end
+	end
+
+	-- 2. sans brins : sous tout ce qui est construit (collisions de la map, + 2 studs de marge de chaque cote)
+	local MARGE = 4
+	local sans = {sol = true, limite = true, tronc = true}
+	for _, b in ipairs(C.boites) do
+		if not sans[b[8]] then
+			T:FillBlock(centre * CFrame.new(b[1], -2.05 + Y_T, b[3]) * CFrame.Angles(0, b[7], 0),
+				Vector3.new(b[4] + MARGE, 4.2, b[6] + MARGE), Enum.Material.Ground)
+		end
+	end
+	for _, c in ipairs(C.cylindres) do
+		if not sans[c[6]] then
+			T:FillCylinder(centre * CFrame.new(c[1], -2.05 + Y_T, c[3]), 4.2, c[5] / 2 + MARGE / 2, Enum.Material.Ground)
+		end
+	end
+	for _, q in ipairs(C.plans or {}) do
+		T:FillBlock(centre * CFrame.new(q[1], -2.05 + Y_T, q[3]) * CFrame.fromMatrix(Vector3.zero, Vector3.new(q[7], 0, q[9]).Unit, Vector3.yAxis),
+			Vector3.new(q[4] + MARGE, 4.2, q[6] + MARGE), Enum.Material.Ground)
+	end
+
+	-- 3. plots des joueurs : l'herbe reste (PlotManager gere case par case) ; seuls les tabliers de bitume des acces
+	--    (30 x 20 studs dans le plot, poses par PlotSpawns) sont sans brins
+	for _, pl in ipairs(D.plots or {}) do
+		local u, v = pl.axeU, pl.axeV
+		local rot = CFrame.fromMatrix(Vector3.zero, u, Vector3.yAxis, -v)
+		for _, ac in ipairs(pl.acces or {}) do
+			-- v48 : tablier de 30 x 30 (2 x 2 cases de 15) dans le plot, depuis le bord
+			local c = ac.bord + ac.dedans * 16
+			T:FillBlock(centre * CFrame.new(c.X, -2.05 + Y_T, c.Z) * rot, Vector3.new(34, 4.2, 36), Enum.Material.Ground)
+		end
+	end
+
+	-- 4. zones supplementaires sans brins (D.sansHerbe : {x, z, taille x, taille z, rotation Y en degres}) : halls des
+	--    chaines de production, etc. (facultatif)
+	for _, z in ipairs(D.sansHerbe or {}) do
+		T:FillBlock(centre * CFrame.new(z[1], -2.05 + Y_T, z[2]) * CFrame.Angles(0, math.rad(z[5] or 0), 0),
+			Vector3.new(z[3], 4.2, z[4]), Enum.Material.Ground)
+	end
+
+	-- 4b. v47 : halls des chaines de production (ouverts, sans boite de collision au sol) : pas de brins a l'interieur
+	--     ni sous les rangees de batiments industriels qui les bordent (carre de 470 studs centre sur le hall, tourne)
+	for _, ch in ipairs(D.chaines or {}) do
+		T:FillBlock(centre * CFrame.new(ch.hall.X, -2.05 + Y_T, ch.hall.Z) * CFrame.Angles(0, math.rad(ch.angle or 0), 0),
+			Vector3.new(470, 4.2, 470), Enum.Material.Ground)
+	end
+
+	-- 5. le mesh d'herbe de la map s'efface (Sol_Herbe_0_0 reste la reference de recalage)
+	for _, enfant in ipairs(workspace:GetChildren()) do
+		if enfant:IsA("Model") or enfant:IsA("Folder") then
+			for _, p in ipairs(enfant:GetDescendants()) do
+				if p:IsA("BasePart") and string.find(p.Name, "Sol_Herbe", 1, true) then p.Transparency = 1 end
+			end
+		end
+	end
+
+	-- 6. bassin du monument : vraie eau Roblox, hexagone entre le piedestal et la margelle
+	essayer(function()
+		T.WaterColor = Color3.fromRGB(38, 120, 150)
+		T.WaterTransparency = 0.55
+		T.WaterReflectance = 0.6
+		T.WaterWaveSize = 0.05
+		T.WaterWaveSpeed = 6
+	end)
+	local B = D.bassin
+	if B then
+		local r0, r1 = B.apotheme_int, B.apotheme_ext
+		local rm, larg = 0.5 * (r0 + r1), (r1 - r0)
+		local cote = 2 * r1 * math.tan(math.rad(30)) + 2
+		for k = 0, 5 do
+			local a = math.rad(60 * k)
+			local cf = centre * CFrame.new(B.centre) * CFrame.Angles(0, a, 0) * CFrame.new(rm, (B.y0 + B.y1) / 2, 0)
+			T:FillBlock(cf, Vector3.new(larg, B.y1 - B.y0, cote), Enum.Material.Water)
+		end
+	end
+	print(("[Map] herbe realiste : Terrain Grass (brins) sur la map, Ground sous le bati, eau du bassin (%.1f s)"):format(os.clock() - t0))
+end

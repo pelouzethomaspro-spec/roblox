@@ -1,0 +1,993 @@
+--[[ UIController v12 (LocalScript, StarterGui) — interface en images (rendues depuis le canvas) + zones cliquables.
+	Cette version BRANCHE chaque bouton sur les vraies fonctionnalites du jeu (plus aucune donnee de demonstration) :
+		Start   : ecran-titre, puis choix du plot a la camera (< Choose >), puis ChoosePlotfunction
+		HUD     : onglets Build / Index / Staff / Stock / Supply, Rank -> panneau Ranks, argent et XP affiches
+		Build   : cartes BuildData -> objets du catalogue (table CORRESPONDANCE), fantome, Rotate, Place, Delete, Cancel, Close,
+		          camera libre pendant la construction, quadrillage et zones d'extension
+		Stock   : produit 1-9, quantite, prix reel, Buy -> Buyfunction
+		Supply  : produit 1-9 -> panneaux 3D sur les stations compatibles -> FillStationfunction
+		Staff   : Hire -> Hirefunction ; rangees des vrais employes ; Assign (panneaux 3D) / UnAssign / Fire
+		Index   : cartes = voitures du catalogue (decouvertes ou silhouettes), filtres, fiche Plus
+		Ranks   : rang actuel / suivant, XP et voitures requises (textes ajoutes par-dessus l'image)
+	Toute la logique (prix, argent, placement, stock) reste cote serveur ; l'interface n'envoie que des identifiants.
+]]
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local RS = game:GetService("ReplicatedStorage")
+local ContentProvider = game:GetService("ContentProvider")
+local UserInputService = game:GetService("UserInputService")
+local SoundService = game:GetService("SoundService")
+
+local joueur = Players.LocalPlayer
+local pg = script.Parent:IsA("PlayerGui") and script.Parent or script.Parent.Parent
+local PlayerScripts = joueur:WaitForChild("PlayerScripts")
+local start = pg:WaitForChild("Start"); local main = pg:WaitForChild("Main"); local loading = pg:WaitForChild("Loading")
+local choose = start:WaitForChild("Choose"); local root = main:WaitForChild("Root")
+local hud = root.HUD.HUD1; local menus = root.MENUS
+
+local DIAG = false            -- true : encart de diagnostic en bas a gauche (clics, erreurs)
+
+-- ===== donnees et modules du jeu =====
+local ClientData = require(PlayerScripts:WaitForChild("ClientData"))
+local ActionManager = require(PlayerScripts:WaitForChild("ActionManager"))
+local ClientCamera = require(PlayerScripts:WaitForChild("ClientCamera"))
+local Catalogue = require(RS:WaitForChild("Catalogue"))
+local Car = require(RS.Catalogue:WaitForChild("Car"))
+-- ces trois modules attendent le plot du joueur : charges apres le choix du plot
+local ClientBuild, ClientStaff, ClientSupply
+
+local ChoosePlotfunction = RS:WaitForChild("ChoosePlotfunction")
+local Buyfunction = RS:WaitForChild("Buyfunction")
+local Hirefunction = RS:WaitForChild("Hirefunction")
+local Firefunction = RS:WaitForChild("Firefunction")
+local UnAssignfunction = RS:WaitForChild("UnAssignfunction")
+
+-- ===== modules dependant du plot (charges une fois le plot choisi) =====
+local majHUD                          -- defini dans la section HUD
+local function chargerModules()
+	task.spawn(function()
+		local ok, err = pcall(function()
+			ClientBuild = require(PlayerScripts:WaitForChild("ClientBuild"))
+			ClientStaff = require(PlayerScripts:WaitForChild("ClientStaff"))
+			ClientSupply = require(PlayerScripts:WaitForChild("ClientSupply"))
+		end)
+		if not ok then warn("[UI] chargement des modules : " .. tostring(err)) end
+		if majHUD then majHUD() end
+	end)
+end
+
+-- ===== erreurs a l'ecran (STUDIO SEULEMENT) : toute erreur de script cote joueur s'affiche en bas a gauche =====
+if game:GetService("RunService"):IsStudio() then
+	local gui = Instance.new("ScreenGui"); gui.Name = "ErreursUI"; gui.DisplayOrder = 200; gui.IgnoreGuiInset = true; gui.ResetOnSpawn = false; gui.Parent = pg
+	local lbl = Instance.new("TextLabel"); lbl.Size = UDim2.new(0, 900, 0, 110); lbl.Position = UDim2.new(0, 8, 1, -118); lbl.BackgroundColor3 = Color3.new(0.4, 0, 0); lbl.BackgroundTransparency = 0.3
+	lbl.TextColor3 = Color3.new(1, 1, 1); lbl.TextSize = 13; lbl.Font = Enum.Font.Code; lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.TextYAlignment = Enum.TextYAlignment.Bottom; lbl.TextWrapped = true; lbl.Visible = false; lbl.Parent = gui
+	local lines = {}
+	game:GetService("LogService").MessageOut:Connect(function(msg, t)
+		if msg:find("Failed to load sound", 1, true) then return end
+		if t == Enum.MessageType.MessageError or msg:find("[UI]", 1, true) then
+			table.insert(lines, msg); if #lines > 6 then table.remove(lines, 1) end
+			lbl.Text = table.concat(lines, "\n"); lbl.Visible = true
+		end
+	end)
+end
+
+-- ===== images : reapplique les numeros d'actif =====
+for _, o in ipairs(pg:GetDescendants()) do
+	if o:IsA("ImageLabel") or o:IsA("ImageButton") then
+		local src = o:FindFirstChild("Src")
+		if src and src:IsA("StringValue") and src.Value ~= "" and src.Value ~= "rbxassetid://0" then o.Image = src.Value end
+	end
+end
+
+-- ===== sons =====
+local SND = require(script:WaitForChild("Sounds"))
+local function play(name)
+	local d = SND[name]; if not d then return end
+	pcall(function()
+		local s = Instance.new("Sound"); s.SoundId = d.id; s.Volume = d.volume or 0.5; s.PlaybackSpeed = d.pitch or 1; s.Parent = SoundService
+		s:Play(); s.Ended:Once(function() s:Destroy() end); task.delay(3, function() if s.Parent then s:Destroy() end end)
+	end)
+end
+-- musique de fond : demarre des l'ecran-titre et tourne en boucle (Sounds.musique ; rien si l'id est vide)
+local musique
+local function lancerMusique()
+	local d = SND.musique
+	if musique or not d or not d.id or d.id == "" then return end
+	pcall(function()
+		musique = Instance.new("Sound"); musique.Name = "Musique"; musique.SoundId = d.id; musique.Volume = d.volume or 0.3
+		musique.Looped = true; musique.Parent = SoundService; musique:Play()
+	end)
+end
+local function pressFx(btn)
+	if not btn or not btn:IsA("GuiButton") then return end
+	btn.MouseButton1Down:Connect(function()
+		play("click")
+		local sc = btn:FindFirstChildOfClass("UIScale") or Instance.new("UIScale", btn)
+		sc.Scale = 0.95; TweenService:Create(sc, TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1}):Play()
+	end)
+end
+
+-- ===== message a l'ecran (toast) =====
+local POLICE = Font.new("rbxasset://fonts/families/Nunito.json", Enum.FontWeight.ExtraBold)
+local toast = Instance.new("TextLabel"); toast.Name = "Toast"; toast.Size = UDim2.fromOffset(700, 40); toast.Position = UDim2.fromOffset(610, 590)
+toast.BackgroundColor3 = Color3.fromHex("178f55"); toast.TextColor3 = Color3.new(1, 1, 1); toast.TextSize = 16; toast.FontFace = POLICE
+toast.Visible = false; toast.ZIndex = 60; toast.Parent = root; Instance.new("UICorner", toast).CornerRadius = UDim.new(0, 20)
+local toastJeton = 0
+local function message(txt, erreur, duree)
+	toast.Text = txt; toast.BackgroundColor3 = erreur and Color3.fromHex("c0302a") or Color3.fromHex("178f55"); toast.Visible = true
+	-- (pas de son sur les messages d'erreur : seuls les clics de boutons ont un son)
+	toastJeton += 1; local j = toastJeton
+	task.delay(duree or 2.5, function() if toastJeton == j then toast.Visible = false end end)
+end
+
+-- ===== alertes du serveur (attribut "Alerte" du joueur : ex. pas de route de goudron pour les clients) =====
+joueur:GetAttributeChangedSignal("Alerte"):Connect(function()
+	local a = joueur:GetAttribute("Alerte")
+	if type(a) == "string" and a ~= "" then message((a:gsub(" #%d+$", "")), true, 7) end
+end)
+
+-- ===== diagnostic (facultatif) =====
+if DIAG then
+	local dbg = Instance.new("ScreenGui"); dbg.Name = "Diag"; dbg.DisplayOrder = 100; dbg.IgnoreGuiInset = true; dbg.Parent = pg
+	local lbl = Instance.new("TextLabel"); lbl.Size = UDim2.new(0, 700, 0, 120); lbl.Position = UDim2.new(0, 8, 1, -128); lbl.BackgroundColor3 = Color3.new(0, 0, 0); lbl.BackgroundTransparency = 0.35
+	lbl.TextColor3 = Color3.new(1, 1, 1); lbl.TextSize = 12; lbl.Font = Enum.Font.Code; lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.TextYAlignment = Enum.TextYAlignment.Bottom; lbl.TextWrapped = true; lbl.ZIndex = 1000; lbl.Parent = dbg
+	local lines = {}
+	local function add(m) table.insert(lines, m); if #lines > 8 then table.remove(lines, 1) end; lbl.Text = table.concat(lines, "\n") end
+	game:GetService("LogService").MessageOut:Connect(function(msg, t) if t == Enum.MessageType.MessageError or msg:find("StationTycoon") then add((t == Enum.MessageType.MessageError and "ERREUR " or "") .. msg) end end)
+	UserInputService.InputBegan:Connect(function(input, gp)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			local objs = pg:GetGuiObjectsAtPosition(input.Position.X, input.Position.Y); local names = {}
+			for i, o in ipairs(objs) do if i > 7 then break end table.insert(names, o.Name .. "(" .. o.ClassName:sub(1, 4) .. ")") end
+			add(string.format("clic %d,%d gp=%s : %s", input.Position.X, input.Position.Y, tostring(gp), table.concat(names, " > ")))
+		end
+	end)
+	add("diag actif")
+end
+
+-- ===== echelle =====
+-- L'interface est dessinee en 1920 x 1080 et mise a l'echelle "contain" (rien n'est coupe) : sur un ecran plus large
+-- que 16:9 (telephone, 21:9), il reste des bandes a gauche et a droite. Le bandeau du bas est prolonge jusqu'aux bords
+-- par un fond de la meme couleur (BandeauFond), place hors de l'echelle, pour qu'il fasse toujours toute la largeur.
+local COULEUR_BANDEAU = Color3.fromHex("1d2b3a")     -- couleur du bandeau (Bar0/Bar1) ; echantillonnee en jeu
+local bandeau = Instance.new("Frame"); bandeau.Name = "BandeauFond"; bandeau.BackgroundColor3 = COULEUR_BANDEAU
+bandeau.BorderSizePixel = 0; bandeau.AnchorPoint = Vector2.new(0.5, 1); bandeau.Position = UDim2.new(0.5, 0, 1, 0)
+bandeau.ZIndex = 0; bandeau.Parent = main                -- derriere Root (ZIndex 1)
+local function fit()
+	local vs = workspace.CurrentCamera.ViewportSize; local k = math.min(vs.X / 1920, vs.Y / 1080)
+	for _, sc in ipairs(pg:GetDescendants()) do if sc:IsA("UIScale") then sc.Scale = k end end
+	bandeau.Size = UDim2.new(1, 0, 0, math.ceil(58 * k))
+end
+fit(); workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(fit)
+
+-- ===== prechargement des images =====
+main.Enabled = false; start.Enabled = false; loading.Enabled = true
+do
+	local assets, seen = {}, {}
+	for _, o in ipairs(pg:GetDescendants()) do
+		if (o:IsA("ImageLabel") or o:IsA("ImageButton")) and o.Image ~= "" and o.Image ~= "rbxassetid://0" and not seen[o.Image] then seen[o.Image] = true; table.insert(assets, o) end
+	end
+	local bar = loading.Root.Bar.Fill; local status = loading.Root.Status; local total = math.max(1, #assets); local done = 0
+	local t0 = os.clock()
+	task.spawn(function()
+		ContentProvider:PreloadAsync(assets, function()
+			done += 1; local p = done / total
+			bar.Size = UDim2.fromOffset(math.floor(634 * p), 16); status.Text = string.format("Chargement des ressources… %d %%", math.floor(p * 100))
+		end)
+	end)
+	while done < total and os.clock() - t0 < 25 do task.wait(0.05) end
+	bar.Size = UDim2.fromOffset(634, 16); status.Text = "Prêt !"
+	-- la suite (affichage de l'ecran-titre) est faite par terminerChargement(), tout en bas du script, apres le
+	-- pre-rendu de tous les panneaux (voir prerendu) : l'interface est alors vraiment prete, pas seulement telechargee
+end
+-- ===== textures residentes en pleine resolution =====
+-- Roblox ne garde en memoire que le niveau de detail correspondant a la taille a laquelle une image est dessinee, et
+-- decharge les images qui ne sont plus affichees : un panneau ferme puis rouvert repasse par une version floue.
+-- KeepAlive garde donc une copie de CHAQUE image, dessinee en permanence a sa taille reelle (1:1, memes ImageRect),
+-- dans un cadre de 6 x 6 px qui rogne tout (ClipsDescendants) : cout d'affichage nul, textures toujours nettes.
+-- dans son propre ScreenGui, toujours actif (Main est desactive avant l'entree en jeu), sous tout le reste
+local keepGui = Instance.new("ScreenGui"); keepGui.Name = "KeepAlive"; keepGui.DisplayOrder = 0; keepGui.IgnoreGuiInset = true; keepGui.ResetOnSpawn = false; keepGui.Parent = pg
+local keep = Instance.new("Frame"); keep.Name = "Cadre"; keep.Size = UDim2.fromOffset(6, 6); keep.Position = UDim2.fromOffset(0, 0)
+keep.BackgroundTransparency = 1; keep.ClipsDescendants = true; keep.ZIndex = 0; keep.Parent = keepGui
+local residents = {}
+local function garderResident(o)
+	if not (o:IsA("ImageLabel") or o:IsA("ImageButton")) then return end
+	if o.Image == "" or o.Image == "rbxassetid://0" then return end
+	local cle = o.Image .. "|" .. tostring(o.ImageRectSize)
+	if residents[cle] then return end
+	residents[cle] = true
+	local il = Instance.new("ImageLabel"); il.Image = o.Image; il.ImageRectSize = o.ImageRectSize; il.ImageRectOffset = o.ImageRectOffset
+	local sx, sy = o.Size.X.Offset, o.Size.Y.Offset
+	if sx <= 0 or sy <= 0 then sx, sy = math.max(o.AbsoluteSize.X, 1920), math.max(o.AbsoluteSize.Y, 1080) end
+	il.Size = UDim2.fromOffset(sx, sy); il.BackgroundTransparency = 1; il.ImageTransparency = 0.9; il.BorderSizePixel = 0; il.ZIndex = 0; il.Parent = keep
+end
+for _, o in ipairs(pg:GetDescendants()) do garderResident(o) end
+pg.DescendantAdded:Connect(function(o) if o:IsDescendantOf(keep) then return end task.defer(garderResident, o) end)
+
+local function terminerChargement()
+	loading.Root.Status.Text = "Prêt !"
+	task.wait(0.2)
+	local fade = Instance.new("Frame"); fade.Size = UDim2.fromScale(1, 1); fade.BackgroundColor3 = Color3.fromHex("1f6fbf"); fade.BackgroundTransparency = 1; fade.ZIndex = 50; fade.Parent = loading
+	TweenService:Create(fade, TweenInfo.new(0.35), {BackgroundTransparency = 0}):Play(); task.wait(0.35)
+	start.Enabled = true; loading.Enabled = false
+	lancerMusique()
+	fade:Destroy()
+end
+
+-- ===== ecran de depart, en deux etapes =====
+--   1) "titre"  : l'ecran d'accueil complet (fond, tuiles, heros, bulles, bouton Choose)
+--   2) "plot"   : le fond et les decors disparaissent, la camera se pose sur un plot, la barre < Choose > permet de
+--                 passer d'un plot a l'autre et de le prendre (ChoosePlotfunction)
+choose.PlayerName.Text = joueur.DisplayName
+local DECOR = {"Background", "Tiles", "Hero", "B1", "B2", "B3", "B4", "PlayerName"}
+do
+	local hero, baseHero = choose.Hero, choose.Hero.Position
+	local bubbles = {}
+	for _, n in ipairs({"B1", "B2", "B3", "B4"}) do local b = choose[n]; table.insert(bubbles, {f = b, base = b.Position, t = math.random() * 8, dur = 7 + math.random() * 3, dx = math.random(-20, 20)}) end
+	local t = 0
+	RunService.RenderStepped:Connect(function(dt)
+		if not start.Enabled or not hero.Visible then return end
+		t += dt
+		hero.Position = baseHero + UDim2.fromOffset(0, -13 + 13 * math.cos(t * 2 * math.pi / 6)); hero.Rotation = 0.4 * math.sin(t * 2 * math.pi / 6)
+		for _, b in ipairs(bubbles) do
+			b.t += dt; if b.t > b.dur then b.t = 0; b.dx = math.random(-20, 20) end
+			local p = b.t / b.dur; b.f.Position = b.base + UDim2.fromOffset(b.dx * p, -260 * p); b.f.BackgroundTransparency = 1 - math.min(1, p * 5) * (1 - p) * 0.8
+		end
+	end)
+end
+
+local PlotSpawns = workspace:WaitForChild("PlotSpawns")
+local plots = {}
+for _, p in ipairs(PlotSpawns:GetChildren()) do if p:FindFirstChild("PlotCenter") then table.insert(plots, p) end end
+table.sort(plots, function(a, b) return a.Name < b.Name end)
+local numero = 1
+local etape = "titre"
+local starting = false
+local enJeu = false
+local setHud   -- defini dans la section onglets
+local cameraJ = workspace.CurrentCamera
+local function plotLibre(p) return p:GetAttribute("OwnerId") == nil end
+local function majChoose()
+	if etape ~= "plot" then choose.Center.Choose.Text = "" return end
+	local p = plots[numero]
+	choose.Center.Choose.Text = (p and not plotLibre(p)) and "Occupé" or ""
+end
+local function afficherPlot()
+	local p = plots[numero]
+	local cam = p and p:FindFirstChild("Camera")
+	if cam and cam:IsA("BasePart") then
+		cameraJ.CameraType = Enum.CameraType.Scriptable
+		TweenService:Create(cameraJ, TweenInfo.new(1, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), {CFrame = cam.CFrame}):Play()
+	end
+	majChoose()
+end
+-- ecran "Choisis ton emplacement" : absent du fichier UI (StationTycoon_v17 ne contient que l'ecran-titre),
+-- reconstruit ici d'apres la maquette : badge vert en haut a gauche, pilule blanche en bas avec < >, bouton vert,
+-- points de pagination. A remplacer par la vraie page quand elle sera dans l'export (Start > PlotChoix).
+local VERT_UI, VERT_UI_FONCE = Color3.fromHex("178f55"), Color3.fromHex("127f4b")
+local plotUI = start:FindFirstChild("PlotChoix")
+local ptsPagination = {}
+if not plotUI then
+	plotUI = Instance.new("Frame"); plotUI.Name = "PlotChoix"; plotUI.Size = UDim2.fromOffset(1920, 1080); plotUI.Position = UDim2.fromScale(0.5, 0.5); plotUI.AnchorPoint = Vector2.new(0.5, 0.5)
+	plotUI.BackgroundTransparency = 1; plotUI.ZIndex = 50; plotUI.Parent = choose
+	-- badge
+	local badge = Instance.new("Frame"); badge.Name = "Badge"; badge.Position = UDim2.fromOffset(-12, 60); badge.Size = UDim2.fromOffset(300, 42); badge.BackgroundColor3 = VERT_UI; badge.BorderSizePixel = 0; badge.ZIndex = 51; badge.Parent = plotUI
+	Instance.new("UICorner", badge).CornerRadius = UDim.new(0, 12)
+	local bt = Instance.new("TextLabel"); bt.Size = UDim2.new(1, -20, 1, 0); bt.Position = UDim2.fromOffset(24, 0); bt.BackgroundTransparency = 1; bt.Text = "CHOISIS TON EMPLACEMENT"; bt.TextColor3 = Color3.new(1, 1, 1); bt.TextSize = 18; bt.FontFace = POLICE; bt.TextXAlignment = Enum.TextXAlignment.Left; bt.ZIndex = 52; bt.Parent = badge
+	-- pilule
+	local pilule = Instance.new("Frame"); pilule.Name = "Pilule"; pilule.AnchorPoint = Vector2.new(0.5, 1); pilule.Position = UDim2.new(0.5, 0, 1, -80); pilule.Size = UDim2.fromOffset(420, 64)
+	pilule.BackgroundColor3 = Color3.new(1, 1, 1); pilule.BorderSizePixel = 0; pilule.ZIndex = 51; pilule.Parent = plotUI
+	Instance.new("UICorner", pilule).CornerRadius = UDim.new(1, 0)
+	local stroke = Instance.new("UIStroke", pilule); stroke.Color = Color3.fromHex("cfd4d2"); stroke.Thickness = 3
+	local function rond(nom, x, txt)
+		local b = Instance.new("TextButton"); b.Name = nom; b.AnchorPoint = Vector2.new(0, 0.5); b.Position = UDim2.new(0, x, 0.5, 0); b.Size = UDim2.fromOffset(44, 44)
+		b.BackgroundColor3 = Color3.fromHex("d9dcda"); b.Text = txt; b.TextColor3 = Color3.fromHex("213038"); b.TextSize = 28; b.FontFace = POLICE; b.AutoButtonColor = true; b.ZIndex = 52; b.Parent = pilule
+		Instance.new("UICorner", b).CornerRadius = UDim.new(1, 0)
+		return b
+	end
+	rond("Prev", 10, "‹"); rond("Next", 420 - 54, "›")
+	local ch = Instance.new("TextButton"); ch.Name = "Choisir"; ch.AnchorPoint = Vector2.new(0.5, 0.5); ch.Position = UDim2.fromScale(0.5, 0.5); ch.Size = UDim2.fromOffset(290, 46)
+	ch.BackgroundColor3 = VERT_UI; ch.Text = "CHOISIR CET EMPLACEMENT   ▶"; ch.TextColor3 = Color3.new(1, 1, 1); ch.TextSize = 15; ch.FontFace = POLICE; ch.AutoButtonColor = true; ch.ZIndex = 52; ch.Parent = pilule
+	Instance.new("UICorner", ch).CornerRadius = UDim.new(1, 0)
+	-- points de pagination
+	local dots = Instance.new("Frame"); dots.Name = "Dots"; dots.AnchorPoint = Vector2.new(0.5, 1); dots.Position = UDim2.new(0.5, 0, 1, -48); dots.Size = UDim2.fromOffset(200, 14); dots.BackgroundTransparency = 1; dots.ZIndex = 51; dots.Parent = plotUI
+	local lay = Instance.new("UIListLayout", dots); lay.FillDirection = Enum.FillDirection.Horizontal; lay.HorizontalAlignment = Enum.HorizontalAlignment.Center; lay.VerticalAlignment = Enum.VerticalAlignment.Center; lay.Padding = UDim.new(0, 10)
+	for i = 1, #plots do
+		local d = Instance.new("Frame"); d.Size = UDim2.fromOffset(12, 12); d.BackgroundColor3 = Color3.new(1, 1, 1); d.BorderSizePixel = 0; d.LayoutOrder = i; d.ZIndex = 52; d.Parent = dots
+		Instance.new("UICorner", d).CornerRadius = UDim.new(1, 0); ptsPagination[i] = d
+	end
+end
+plotUI.Visible = false
+local function majPagination()
+	for i, d in ipairs(ptsPagination) do
+		d.BackgroundColor3 = (i == numero) and Color3.fromHex("ffd257") or Color3.new(1, 1, 1)
+		d.BackgroundTransparency = (i == numero) and 0 or 0.5
+	end
+	local p = plots[numero]
+	local ch = plotUI:FindFirstChild("Pilule") and plotUI.Pilule:FindFirstChild("Choisir")
+	if ch then
+		local occupe = p and not plotLibre(p)
+		ch.Text = occupe and "EMPLACEMENT OCCUPÉ" or "CHOISIR CET EMPLACEMENT   ▶"
+		ch.BackgroundColor3 = occupe and Color3.fromHex("8a9490") or VERT_UI
+	end
+end
+
+local function passerAuChoixDuPlot()
+	etape = "plot"
+	for _, n in ipairs(DECOR) do local o = choose:FindFirstChild(n) or start:FindFirstChild(n); if o then o.Visible = false end end
+	choose.Center.Visible = false
+	plotUI.Visible = true
+	for i, p in ipairs(plots) do if plotLibre(p) then numero = i break end end
+	afficherPlot(); majPagination()
+end
+
+local function prendrePlot()
+	if starting then return end
+	local cible = plots[numero]
+	if not (cible and plotLibre(cible)) then message("Cet emplacement est occupé : choisis-en un autre avec ‹ et ›", true) return end
+	starting = true
+	local okInv, ok = pcall(function() return ChoosePlotfunction:InvokeServer(cible) end)
+	if not okInv then starting = false; message("Erreur serveur au choix du plot : " .. tostring(ok), true, 6); warn("[UI] ChoosePlot : " .. tostring(ok)) return end
+	if not ok then starting = false; message("Impossible de prendre ce plot (données pas encore chargées ?)", true) return end
+	play("open")
+	plotUI.Visible = false
+	local fade = Instance.new("Frame"); fade.Size = UDim2.fromScale(1, 1); fade.BackgroundColor3 = Color3.fromHex("0c3054"); fade.BackgroundTransparency = 1; fade.ZIndex = 100; fade.Parent = start
+	local lbl = Instance.new("TextLabel"); lbl.Size = UDim2.fromScale(1, 0); lbl.Position = UDim2.fromScale(0, 0.47); lbl.BackgroundTransparency = 1; lbl.Text = "Chargement du garage…"; lbl.TextColor3 = Color3.new(1, 1, 1); lbl.TextSize = 34; lbl.FontFace = POLICE; lbl.TextTransparency = 1; lbl.ZIndex = 101; lbl.Parent = fade
+	TweenService:Create(fade, TweenInfo.new(0.45), {BackgroundTransparency = 0.05}):Play(); TweenService:Create(lbl, TweenInfo.new(0.45), {TextTransparency = 0}):Play()
+	chargerModules()
+	task.wait(1.2)
+	fade:Destroy()
+	cameraJ.CameraType = Enum.CameraType.Custom
+	local perso = joueur.Character; if perso then cameraJ.CameraSubject = perso:FindFirstChildOfClass("Humanoid") end
+	start.Enabled = false; enJeu = true
+	setHud(true)                   -- la barre du bas est toujours visible en jeu ; les panneaux s'ouvrent au clic
+end
+
+pressFx(choose.Center.Choose)
+choose.Center.Choose.Activated:Connect(function() if etape == "titre" then play("open"); passerAuChoixDuPlot() end end)
+do
+	local pil = plotUI:FindFirstChild("Pilule")
+	if pil then
+		pressFx(pil.Prev); pressFx(pil.Next); pressFx(pil.Choisir)
+		pil.Next.Activated:Connect(function() if etape == "plot" then numero = numero % #plots + 1; afficherPlot(); majPagination() end end)
+		pil.Prev.Activated:Connect(function() if etape == "plot" then numero = (numero - 2) % #plots + 1; afficherPlot(); majPagination() end end)
+		pil.Choisir.Activated:Connect(function() if etape == "plot" then prendrePlot() end end)
+	end
+end
+for _, p in ipairs(plots) do p:GetAttributeChangedSignal("OwnerId"):Connect(function() majChoose(); majPagination() end) end
+
+-- ===== HUD : argent, XP =====
+local function label(parent, nom, pos, taille, tailleTexte, align)
+	local l = Instance.new("TextLabel"); l.Name = nom; l.Position = pos; l.Size = taille; l.BackgroundTransparency = 1
+	l.TextColor3 = Color3.new(1, 1, 1); l.TextStrokeTransparency = 0.6; l.TextSize = tailleTexte; l.FontFace = POLICE
+	l.TextXAlignment = align or Enum.TextXAlignment.Left; l.ZIndex = 30; l.Parent = parent
+	return l
+end
+-- (positions de depart : a deplacer dans Studio sur les zones prevues du bandeau)
+local lblArgent = label(hud.Low1, "Money", UDim2.fromOffset(1500, 1051), UDim2.fromOffset(230, 30), 22, Enum.TextXAlignment.Right)
+local lblXp = label(hud.Low1, "Xp", UDim2.fromOffset(1290, 1053), UDim2.fromOffset(200, 26), 16, Enum.TextXAlignment.Right)
+local function argentTexte(v)
+	local s = tostring(math.floor(v or 0)):reverse():gsub("(%d%d%d)", "%1 "):reverse()
+	s = s:gsub("^ ", "")
+	return s .. " $"
+end
+majHUD = function()
+	local d = ClientData.Data
+	if not d then return end
+	lblArgent.Text = argentTexte(d.Money)
+	lblXp.Text = string.format("%d XP", math.floor(d.Xp or 0))
+	local rang = ClientData.GetRank()
+	if rang then hud.Low1.Rank.Text = rang.Nom end
+end
+
+-- ===== onglets =====
+local TABS = {"Build", "Index", "Staff", "Stock", "Supply"}
+local current = nil
+local hudOpen = false
+local ouvrir, fermer = {}, {}         -- callbacks par onglet, remplis par les sections ci-dessous
+local prechauffer = {}                -- pre-rendu au chargement (facultatif par onglet, sinon ouvrir[] est utilise)
+local function setPill(name)
+	for _, n in ipairs(TABS) do local a = hud.BarArt:FindFirstChild("Active_" .. n) if a then a.Visible = (n == name) end end
+	local ia = hud.BarArt:FindFirstChild("Inactive_Supply"); if ia then ia.Visible = (name ~= "Supply") end
+end
+local function showPanel(p, on)
+	local art = p:FindFirstChild("Art")
+	if on then
+		p.Visible = true
+		if art then
+			art.GroupTransparency = 1; art.Position = UDim2.fromOffset(0, 18)
+			TweenService:Create(art, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {GroupTransparency = 0, Position = UDim2.fromOffset(0, 0)}):Play()
+		end
+	elseif art then
+		local tw = TweenService:Create(art, TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {GroupTransparency = 1, Position = UDim2.fromOffset(0, 12)})
+		tw:Play(); tw.Completed:Once(function() if current ~= p.Name then p.Visible = false end end)
+	else
+		p.Visible = false
+	end
+end
+local function showTab(name)
+	if name == current then return end
+	local prev = current; current = name
+	if prev then showPanel(menus[prev], false); if fermer[prev] then pcall(fermer[prev]) end end
+	if name then showPanel(menus[name], true); setPill(name); if ouvrir[name] then pcall(ouvrir[name]) end else setPill(nil) end
+end
+setHud = function(open)
+	hudOpen = open
+	if open then
+		main.Enabled = true; majHUD()
+		hud.Position = UDim2.fromOffset(0, 70); TweenService:Create(hud, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Position = UDim2.fromOffset(0, 0)}):Play()
+		showTab(nil); play("open")     -- seule la barre : aucun panneau ouvert
+	else
+		play("close")
+		showTab(nil)
+		menus.Ranks.Visible = false
+		local tw = TweenService:Create(hud, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {Position = UDim2.fromOffset(0, 70)})
+		tw:Play(); tw.Completed:Once(function() if not hudOpen then main.Enabled = false end end)
+	end
+end
+for _, n in ipairs(TABS) do
+	local b = hud.Low2[n]; b.Active = true; b.Selectable = true; pressFx(b)
+	b.Activated:Connect(function() if current == n then showTab(nil) else showTab(n) end end)   -- re-cliquer l'onglet ouvert le ferme
+end
+for _, p in ipairs(TABS) do menus[p].Visible = false end
+-- M ou Echap : ferme le panneau ouvert (la barre du bas reste toujours affichee)
+UserInputService.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	if (input.KeyCode == Enum.KeyCode.M or input.KeyCode == Enum.KeyCode.Escape) and enJeu and current then
+		showTab(nil)
+	end
+end)
+ClientData.OnDataChanged.Event:Connect(function(cle)
+	if cle == "Money" or cle == "Xp" or cle == "Index" then majHUD() end
+end)
+
+-- ===== sections isolees : une erreur dans un menu n'empeche pas les autres de fonctionner =====
+local function section(nom, f)
+	local ok, err = pcall(f)
+	if not ok then warn("[UI] section " .. nom .. " : " .. tostring(err)) end
+end
+
+-- ===== Ranks =====
+section("Ranks", function()
+	local rk = menus.Ranks
+	local titre = label(rk, "Titre", UDim2.fromOffset(560, 420), UDim2.fromOffset(800, 40), 30, Enum.TextXAlignment.Center)
+	local corps = label(rk, "Corps", UDim2.fromOffset(560, 470), UDim2.fromOffset(800, 200), 20, Enum.TextXAlignment.Center)
+	corps.TextYAlignment = Enum.TextYAlignment.Top; corps.RichText = true
+	local function maj()
+		local rang, suivant = ClientData.GetRank()
+		local d = ClientData.Data or {}
+		titre.Text = "Rang : " .. (rang and rang.Nom or "?")
+		local lignes = {}
+		if suivant then
+			table.insert(lignes, string.format("Prochain rang : <b>%s</b>  —  XP %d / %d", suivant.Nom, math.floor(d.Xp or 0), suivant.Xp))
+			for _, tier in ipairs(Car.Ordre) do
+				local requis = suivant.Requis[tier]
+				if requis then table.insert(lignes, string.format("%s : %d / %d", tier, ClientData.CountTier(tier), requis)) end
+			end
+		else
+			table.insert(lignes, "Rang maximum atteint !")
+		end
+		corps.Text = table.concat(lignes, "\n")
+	end
+	pressFx(hud.Low1.Rank); pressFx(rk.Close)
+	hud.Low1.Rank.Activated:Connect(function() rk.Visible = not rk.Visible; if rk.Visible then maj() end end)
+	rk.Close.Activated:Connect(function() rk.Visible = false end)
+end)
+
+-- ===== Stock =====
+section("Stock", function()
+	local st = menus.Stock; local sel, qty = 1, 1
+	local function refresh()
+		for i = 1, 9 do local v = st.Art.Variants:FindFirstChild("V" .. i) if v then v.Visible = (i == sel) end end
+		local infos = Catalogue.GetInfo("Consommable", tostring(sel))
+		st.Right.Box.Text = tostring(qty)
+		st.Right.Price.Text = infos and ((infos.Buy * qty) .. "$") or "?"
+	end
+	for i = 1, 9 do
+		local b = st.Art.Center:FindFirstChild(tostring(i))
+		if b then
+			b.Activated:Connect(function() sel = i; qty = 1; refresh() end)
+			b.MouseButton1Down:Connect(function() play("click") end)
+		end
+	end
+	pressFx(st.Right.Minus); pressFx(st.Right.Plus); pressFx(st.Right.Buy)
+	st.Right.Minus.Activated:Connect(function() qty = math.max(1, qty - 1); refresh() end)
+	st.Right.Plus.Activated:Connect(function() qty = math.min(99, qty + 1); refresh() end)
+	st.Right.Buy.Activated:Connect(function()
+		local sc = st.Right.Buy:FindFirstChildOfClass("UIScale") or Instance.new("UIScale", st.Right.Buy); sc.Scale = 0.94
+		TweenService:Create(sc, TweenInfo.new(0.25, Enum.EasingStyle.Back), {Scale = 1}):Play()
+		local ok, eta = Buyfunction:InvokeServer(tostring(sel), qty)
+		if ok then
+			play("buy")
+			local infos = Catalogue.GetInfo("Consommable", tostring(sel))
+			if type(eta) == "number" and eta > 0 then
+				message(string.format("Commande passée : %d × %s  —  livraison dans %d s", qty, infos and infos.Name or sel, math.ceil(eta)), false, 4)
+			else
+				message(string.format("Commande passée : %d × %s  —  le camion partira dès que ton plot sera prêt", qty, infos and infos.Name or sel), false, 4)
+			end
+		else
+			message("Achat refusé : argent ou place de stockage insuffisants (ce qui est déjà en route compte)", true)
+		end
+	end)
+
+	-- camion de livraison : compte a rebours dans l'onglet + message a la livraison (RemoteEvent LivraisonEvent, serveur)
+	local camion = Instance.new("TextLabel"); camion.Name = "Camion"; camion.AnchorPoint = Vector2.new(0.5, 1)
+	camion.Size = UDim2.new(1, -10, 0, 22); camion.Position = UDim2.new(0.5, 0, 1, -6); camion.BackgroundTransparency = 1
+	camion.TextColor3 = Color3.fromHex("ffd166"); camion.TextSize = 15; camion.FontFace = POLICE; camion.TextScaled = false
+	camion.Text = ""; camion.ZIndex = 30; camion.Parent = st.Right
+	local arrivee = nil                                        -- heure serveur de la livraison en cours
+	local LivraisonEvent = RS:WaitForChild("LivraisonEvent", 15)
+	if LivraisonEvent then
+		LivraisonEvent.OnClientEvent:Connect(function(quoi, arg)
+			if quoi == "commande" and type(arg) == "number" then
+				arrivee = workspace:GetServerTimeNow() + arg
+			elseif quoi == "livree" then
+				arrivee = nil; camion.Text = ""
+				local parts = {}
+				if type(arg) == "table" then for _, l in ipairs(arg) do table.insert(parts, ("%d × %s"):format(l.qte or 0, tostring(l.nom or l.item))) end end
+				play("buy")
+				message("Livraison reçue : " .. (#parts > 0 and table.concat(parts, ", ") or "ta commande") .. string.format("  —  inventaire %d / %d L", ClientData.GetCurrentVolume(), ClientData.GetMaxVolume()), false, 5)
+			end
+		end)
+	end
+	task.spawn(function()
+		while true do
+			task.wait(0.5)
+			if arrivee then
+				local reste = arrivee - workspace:GetServerTimeNow()
+				camion.Text = reste > 0 and ("Prochaine livraison dans %d s"):format(math.ceil(reste)) or "Le camion passe devant le plot…"
+			end
+		end
+	end)
+	ouvrir.Stock = refresh
+	refresh()
+end)
+
+-- ===== Supply =====
+section("Supply", function()
+	local sp = menus.Supply
+	local sel = nil
+	local function select(k)
+		sel = k
+		for i = 1, 9 do local v = sp.Art.Variants:FindFirstChild("V" .. i) if v then v.Visible = (i == k) end end
+		if ClientSupply and k then
+			local function refresh() if sel == k then ClientSupply.CreateUIStations(tostring(k), function() end) end end
+			ClientSupply.CreateUIStations(tostring(k), refresh)
+		end
+	end
+	for i = 1, 9 do
+		local b = sp.Art.Center:FindFirstChild(tostring(i))
+		if b then
+			b.Activated:Connect(function() select(i) end)
+			b.MouseButton1Down:Connect(function() play("click") end)
+		end
+	end
+	ouvrir.Supply = function() select(sel or 1) end
+	fermer.Supply = function() if ClientSupply then ClientSupply.DestroyUIStations() end end
+end)
+
+-- ===== Staff =====
+section("Staff", function()
+	local sf = menus.Staff; local tpl = sf.Staff.Template; local list = sf.Left.List
+	local G = ColorSequence.new(Color3.fromHex("23a866"), Color3.fromHex("127f4b")); local W = ColorSequence.new(Color3.new(1, 1, 1), Color3.fromHex("eef0ea"))
+	local ROLE = {Attendant = "Attendant", Cashier = "Caissier"}
+	local function refresh()
+		for _, c in ipairs(list:GetChildren()) do if c:IsA("Frame") then c:Destroy() end end
+		local d = ClientData.Data
+		if not (d and d.Workers) then return end
+		local ids = {}
+		for id in pairs(d.Workers) do table.insert(ids, id) end
+		table.sort(ids, function(a, b) return (d.Workers[a].Name .. a) < (d.Workers[b].Name .. b) end)
+		local sansLayout = list:FindFirstChildWhichIsA("UIListLayout") == nil
+		for i, id in ipairs(ids) do
+			local w = d.Workers[id]
+			local row = tpl:Clone(); row.Visible = true; row.Name = id; row.LayoutOrder = i
+			if sansLayout then row.Position = UDim2.fromOffset(0, (i - 1) * 56) end
+			local assigned = w.Furniture ~= nil
+			row.N.Text = w.Name or "?"; row.Av.T.Text = (w.Name or "?"):sub(1, 1); row.Av.BackgroundColor3 = w.Type == "Attendant" and Color3.fromHex("2f7fd6") or Color3.fromHex("8e44d6")
+			local grad = row:FindFirstChildOfClass("UIGradient"); if grad then grad.Color = assigned and G or W end
+			row.N.TextColor3 = assigned and Color3.new(1, 1, 1) or Color3.fromHex("213038")
+			row.R.TextColor3 = assigned and Color3.fromHex("d6f2e2") or Color3.fromHex("5b6b70")
+			row.R.Text = (ROLE[w.Type] or w.Type) .. (assigned and " · En poste" or " · Sans poste")
+			row.Assign.Visible = not assigned; row.UnAssign.Visible = assigned
+			pressFx(row.Assign); pressFx(row.UnAssign); pressFx(row.Fire)
+			row.Assign.Activated:Connect(function()
+				if not ClientStaff then return end
+				if w.Type == "Attendant" then ClientStaff.CreateUIStations(id, refresh); ClientStaff.DestroyUICaisses()
+				else ClientStaff.CreateUICaisses(id, refresh); ClientStaff.DestroyUIStations() end
+				message("Clique le panneau au-dessus d'une " .. (w.Type == "Attendant" and "station" or "caisse") .. " pour y affecter " .. (w.Name or "l'employé"), false, 4)
+			end)
+			row.UnAssign.Activated:Connect(function() UnAssignfunction:InvokeServer(id) end)
+			row.Fire.Activated:Connect(function() Firefunction:InvokeServer(id); if ClientStaff then ClientStaff.DestroyUIStations(); ClientStaff.DestroyUICaisses() end end)
+			row.Parent = list
+		end
+	end
+	pressFx(sf.CenterHire.Attendant.Hire); pressFx(sf.CenterHire.Cashier.Hire); pressFx(sf.Top.Hire); pressFx(sf.Top.Assign)
+	local function embaucher(type_)
+		local ok = Hirefunction:InvokeServer(type_)
+		if ok == false then message("Embauche refusée", true) else play("buy") end
+	end
+	sf.CenterHire.Attendant.Hire.Activated:Connect(function() embaucher("Attendant") end)
+	sf.CenterHire.Cashier.Hire.Activated:Connect(function() embaucher("Cashier") end)
+	local function onglet(assign)
+		local art = sf.Art:FindFirstChild("Assign"); if art then art.Visible = assign end
+		sf.CenterHire.Visible = not assign
+	end
+	sf.Top.Hire.Activated:Connect(function() onglet(false) end)
+	sf.Top.Assign.Activated:Connect(function() onglet(true) end)
+	ClientData.OnDataChanged.Event:Connect(function(cle) if cle == "Workers" and menus.Staff.Visible then refresh() end end)
+	ouvrir.Staff = function() onglet(false); refresh() end
+	fermer.Staff = function() if ClientStaff then ClientStaff.DestroyUIStations(); ClientStaff.DestroyUICaisses() end end
+end)
+
+-- ===== Index =====
+section("Index", function()
+	local ix = menus.Index
+	local FILTERS = {"All", "Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic", "Divine"}
+	-- cartes du canvas : 2 par rarete pour les 5 premieres, 1 pour Mythic et Divine (dupliquee si besoin)
+	local CARTE_PAR_TIER = {Common = {1, 2}, Uncommon = {3, 4}, Rare = {5, 6}, Epic = {7, 8}, Legendary = {9, 10}, Mythic = {11}, Divine = {12}}
+	local function carteSource(i) return ix.Art.Center:FindFirstChild(string.format("IndexCard_%02d", i)) end
+	local function viewport(vp, modele, decouverte)
+		for _, ch in ipairs(vp:GetChildren()) do if ch:IsA("WorldModel") or ch:IsA("Camera") then ch:Destroy() end end
+		local world = Instance.new("WorldModel"); world.Parent = vp
+		local m = modele:Clone()
+		for _, d in ipairs(m:GetDescendants()) do
+			if d:IsA("BaseScript") or d:IsA("JointInstance") or d:IsA("WeldConstraint") then d:Destroy()
+			elseif not decouverte then
+				if d:IsA("BasePart") then d.Color = Color3.new(0, 0, 0); d.Material = Enum.Material.Neon
+					local sa = d:FindFirstChildOfClass("SurfaceAppearance"); if sa then sa:Destroy() end
+					if d:IsA("MeshPart") then pcall(function() d.TextureID = "" end) end
+				elseif d:IsA("Texture") or d:IsA("Decal") then d:Destroy() end
+			end
+		end
+		m.Parent = world
+		local cf, size = m:GetBoundingBox(); local dist = math.max(size.X, size.Z)
+		local cam = Instance.new("Camera"); cam.Parent = vp; vp.CurrentCamera = cam
+		cam.CFrame = CFrame.lookAt(cf.Position + Vector3.new(0, dist * 0.55, -dist * 1.45), cf.Position); cam.FieldOfView = 32
+		m:PivotTo(CFrame.new(cf.Position) * CFrame.Angles(0, math.rad(40), 0)); vp.Visible = true
+		return m
+	end
+	local cartes = {}          -- {card, tier, nom, modele, liaison}
+	local construit = false
+	local function construire()
+		if construit then return end; construit = true
+		for _, tier in ipairs(Car.Ordre) do
+			local pool = Car[tier]; local sources = CARTE_PAR_TIER[tier] or {12}
+			for k, nom in ipairs(pool.Models) do
+				local src = carteSource(sources[k] or sources[#sources])
+				if src then
+					local card = (sources[k] and k <= #sources) and src or src:Clone()
+					if card ~= src then card.Name = src.Name .. "_" .. nom; card.Parent = ix.Art.Center end
+					local modele = Car.Modele and Car.Modele(tier, nom) or nil
+					table.insert(cartes, {card = card, tier = tier, nom = nom, modele = modele})
+				end
+			end
+		end
+	end
+	local function peindre(filtre)
+		local d = ClientData.Data or {}; local index = d.Index or {}
+		local k = 0
+		for _, c in ipairs(cartes) do
+			local quantite = (index[c.tier] and index[c.tier][c.nom]) or 0
+			local visible = (filtre == "All" or filtre == c.tier)
+			c.card.Visible = visible
+			if visible then
+				local col, row = k % 3, math.floor(k / 3); k += 1
+				c.card.Position = UDim2.fromOffset(4 + col * 266, 4 + row * 186)
+				local decouverte = quantite > 0
+				if c.modele and c.decouverte ~= decouverte then
+					c.decouverte = decouverte
+					c.m = viewport(c.card.Car, c.modele, decouverte)
+					if not c.liaison then
+						c.liaison = true
+						local angle, conn = math.rad(40), nil
+						c.card.Clic.MouseEnter:Connect(function() if c.m and not conn then conn = RunService.RenderStepped:Connect(function(dt) angle += dt * 1.2; local cf = c.m:GetPivot(); c.m:PivotTo(CFrame.new(cf.Position) * CFrame.Angles(0, angle, 0)) end) end end)
+						c.card.Clic.MouseLeave:Connect(function() if conn then conn:Disconnect(); conn = nil end end)
+						c.card.Clic.Activated:Connect(function()
+							ix.Plus.Visible = true
+							local pm = viewport(ix.Plus.Car, c.modele, c.decouverte)
+							local a = math.rad(40); local pc
+							pc = RunService.RenderStepped:Connect(function(dt) if not ix.Plus.Visible then pc:Disconnect(); return end a += dt * 0.8; local cf = pm:GetPivot(); pm:PivotTo(CFrame.new(cf.Position) * CFrame.Angles(0, a, 0)) end)
+							local q = ((ClientData.Data or {}).Index or {})[c.tier]; q = q and q[c.nom] or 0
+							message(string.format("%s (%s) — vue %d fois", c.nom, c.tier, q), false, 3)
+						end)
+					end
+				end
+			end
+		end
+		ix.Art.Center.CanvasSize = UDim2.fromOffset(0, 8 + math.ceil(k / 3) * 186)
+	end
+	local filtreActuel = "All"
+	pressFx(ix.Plus.Close)
+	ix.Plus.Close.Activated:Connect(function() ix.Plus.Visible = false end)
+	for _, name in ipairs(FILTERS) do local b = ix.Right:FindFirstChild(name); if b then pressFx(b); b.Activated:Connect(function() filtreActuel = name; peindre(name) end) end end
+	ouvrir.Index = function() construire(); peindre(filtreActuel) end
+	fermer.Index = function() ix.Plus.Visible = false end
+	ClientData.OnDataChanged.Event:Connect(function(cle) if cle == "Index" and menus.Index.Visible then peindre(filtreActuel) end end)
+end)
+
+-- ===== Build =====
+section("Build", function()
+	local bd = menus.Build
+	local DATA = require(bd.Build.BuildData)
+	local tpl = bd.Build.TemplateBouton
+	local CATS = {Floor = "sol", Wall = "murs", Furniture = "mobilier", Roof = "toit"}
+	-- Image publiee en double : Variants/V_mobilier/T0 (moitie gauche : titre + boutons de categorie) a recu la meme
+	-- image que T1 (moitie droite), d'ou une barre d'outils en double et plus de boutons de categorie dans l'onglet
+	-- mobilier. On masque cette moitie gauche pour laisser voir celle du fond (Base/T0), qui contient les boutons.
+	-- A retirer quand la bonne image V_mobilier_T0 sera publiee et son numero renseigne dans Src.
+	local IMAGES_EN_DOUBLE = {["81276375909626"] = true, ["104569280553761"] = true}
+	for _, couche in ipairs(bd.Art.Variants:GetChildren()) do
+		local t0 = couche:FindFirstChild("T0")
+		if t0 and t0:IsA("ImageLabel") then
+			local id = string.match(t0.Image, "%d+")
+			if id and IMAGES_EN_DOUBLE[id] then
+				t0.Visible = false
+				warn("[UI] " .. couche.Name .. "/T0 : image publiee en double, moitie gauche masquee (republier V_" .. couche.Name:sub(3) .. "_T0)")
+			end
+		end
+	end
+	-- CARTES : carte du menu Build -> {categorie du catalogue, {variante 1, variante 2, ...}}
+	-- Les premieres variantes correspondent aux images (sprites) de la carte ; les suivantes sont montrees en 3D.
+	local CARTES = {
+		x_goudron = {"Sol", {"sol_goudron", "sol_route", "sol_beton"}},
+		sol_parquets = {"Sol", {"sol_parquet_clair", "sol_chene_dore", "sol_chevron", "sol_parquet_fonce", "sol_planches_larges", "sol_batons_rompus", "sol_chene_rustique", "sol_chevron_pale", "sol_echelle", "sol_parquet_chevron", "sol_parquet_larges", "sol_parquet_rouge", "sol_parquet_vieilli", "sol_planches_fines"}},
+		sol_carrelages = {"Sol", {"sol_carrelage_gris", "sol_damier", "sol_marbre", "sol_terrazzo", "sol_mosaique", "sol_ardoise", "sol_moquette"}},
+		sol_exterieur = {"Sol", {"sol_beton", "sol_paves", "sol_goudron", "sol_graviers", "sol_galets", "sol_briques", "sol_route"}},
+		murs_plein = {"Mur", {"mur_plein_brique", "mur_plein_clin", "mur_plein_crepi", "mur_plein_enduit", "mur_plein_pierre"}},
+		murs_vitrine = {"Mur", {"mur_vitrine_brique", "mur_vitrine_clin", "mur_vitrine_crepi", "mur_vitrine_enduit", "mur_vitrine_pierre"}},
+		murs_muret = {"Mur", {"mur_muret_brique", "mur_muret_clin", "mur_muret_crepi", "mur_muret_enduit", "mur_muret_pierre"}},
+		fen_simple = {"Mur", {"mur_fenetre_simple_brique", "mur_fenetre_simple_clin", "mur_fenetre_simple_crepi", "mur_fenetre_simple_enduit", "mur_fenetre_simple_pierre"}},
+		fen_arche = {"Mur", {"mur_baie_arche_brique", "mur_baie_arche_clin", "mur_baie_arche_crepi", "mur_baie_arche_enduit", "mur_baie_arche_pierre"}},
+		porte_bois = {"Mur", {"mur_porte_bois_brique", "mur_porte_bois_clin", "mur_porte_bois_crepi", "mur_porte_bois_enduit", "mur_porte_bois_pierre"}},
+		porte_garage = {"Mur", {"mur_porte_garage_brique", "mur_porte_garage_clin", "mur_porte_garage_crepi", "mur_porte_garage_enduit", "mur_porte_garage_pierre"}},
+		porte_vitree = {"Mur", {"mur_porte_double_vitree_brique", "mur_porte_double_vitree_clin", "mur_porte_double_vitree_crepi", "mur_porte_double_vitree_enduit", "mur_porte_double_vitree_pierre"}},
+		x_mur_fenetre_haute = {"Mur", {"mur_fenetre_haute_brique", "mur_fenetre_haute_clin", "mur_fenetre_haute_crepi", "mur_fenetre_haute_enduit", "mur_fenetre_haute_pierre"}},
+		x_mur_fenetre_grille = {"Mur", {"mur_fenetre_grille_brique", "mur_fenetre_grille_clin", "mur_fenetre_grille_crepi", "mur_fenetre_grille_enduit", "mur_fenetre_grille_pierre"}},
+		x_mur_fenetre_arche_croix = {"Mur", {"mur_fenetre_arche_croix_brique", "mur_fenetre_arche_croix_clin", "mur_fenetre_arche_croix_crepi", "mur_fenetre_arche_croix_enduit", "mur_fenetre_arche_croix_pierre"}},
+		x_mur_fenetre_arche_pleine = {"Mur", {"mur_fenetre_arche_pleine_brique", "mur_fenetre_arche_pleine_clin", "mur_fenetre_arche_pleine_crepi", "mur_fenetre_arche_pleine_enduit", "mur_fenetre_arche_pleine_pierre"}},
+		x_mur_fenetre_arche_vitrine = {"Mur", {"mur_fenetre_arche_vitrine_brique", "mur_fenetre_arche_vitrine_clin", "mur_fenetre_arche_vitrine_crepi", "mur_fenetre_arche_vitrine_enduit", "mur_fenetre_arche_vitrine_pierre"}},
+		x_mur_baie_arche_nue = {"Mur", {"mur_baie_arche_nue_brique", "mur_baie_arche_nue_clin", "mur_baie_arche_nue_crepi", "mur_baie_arche_nue_enduit", "mur_baie_arche_nue_pierre"}},
+		x_mur_baie_barreaudee = {"Mur", {"mur_baie_barreaudee_brique", "mur_baie_barreaudee_clin", "mur_baie_barreaudee_crepi", "mur_baie_barreaudee_enduit", "mur_baie_barreaudee_pierre"}},
+		x_mur_baie_croisee = {"Mur", {"mur_baie_croisee_brique", "mur_baie_croisee_clin", "mur_baie_croisee_crepi", "mur_baie_croisee_enduit", "mur_baie_croisee_pierre"}},
+		x_mur_baie_grille = {"Mur", {"mur_baie_grille_brique", "mur_baie_grille_clin", "mur_baie_grille_crepi", "mur_baie_grille_enduit", "mur_baie_grille_pierre"}},
+		x_mur_baie_simple = {"Mur", {"mur_baie_simple_brique", "mur_baie_simple_clin", "mur_baie_simple_crepi", "mur_baie_simple_enduit", "mur_baie_simple_pierre"}},
+		x_mur_deux_baies = {"Mur", {"mur_deux_baies_brique", "mur_deux_baies_clin", "mur_deux_baies_crepi", "mur_deux_baies_enduit", "mur_deux_baies_pierre"}},
+		x_mur_porte = {"Mur", {"mur_porte_brique", "mur_porte_clin", "mur_porte_crepi", "mur_porte_enduit", "mur_porte_pierre"}},
+		x_mur_porte_blanche = {"Mur", {"mur_porte_blanche_brique", "mur_porte_blanche_clin", "mur_porte_blanche_crepi", "mur_porte_blanche_enduit", "mur_porte_blanche_pierre"}},
+		x_mur_porte_deco = {"Mur", {"mur_porte_deco_brique", "mur_porte_deco_clin", "mur_porte_deco_crepi", "mur_porte_deco_enduit", "mur_porte_deco_pierre"}},
+		x_mur_porte_double_bois = {"Mur", {"mur_porte_double_bois_brique", "mur_porte_double_bois_clin", "mur_porte_double_bois_crepi", "mur_porte_double_bois_enduit", "mur_porte_double_bois_pierre"}},
+		x_mur_porte_double_verte = {"Mur", {"mur_porte_double_verte_brique", "mur_porte_double_verte_clin", "mur_porte_double_verte_crepi", "mur_porte_double_verte_enduit", "mur_porte_double_verte_pierre"}},
+		x_mur_porte_imposte = {"Mur", {"mur_porte_imposte_brique", "mur_porte_imposte_clin", "mur_porte_imposte_crepi", "mur_porte_imposte_enduit", "mur_porte_imposte_pierre"}},
+		x_mur_porte_pleine = {"Mur", {"mur_porte_pleine_brique", "mur_porte_pleine_clin", "mur_porte_pleine_crepi", "mur_porte_pleine_enduit", "mur_porte_pleine_pierre"}},
+		x_mur_porte_service_bois = {"Mur", {"mur_porte_service_bois_brique", "mur_porte_service_bois_clin", "mur_porte_service_bois_crepi", "mur_porte_service_bois_enduit", "mur_porte_service_bois_pierre"}},
+		x_mur_porte_service_verte = {"Mur", {"mur_porte_service_verte_brique", "mur_porte_service_verte_clin", "mur_porte_service_verte_crepi", "mur_porte_service_verte_enduit", "mur_porte_service_verte_pierre"}},
+		x_mur_porte_service_vitree = {"Mur", {"mur_porte_service_vitree_brique", "mur_porte_service_vitree_clin", "mur_porte_service_vitree_crepi", "mur_porte_service_vitree_enduit", "mur_porte_service_vitree_pierre"}},
+		x_mur_porte_simple_blanche = {"Mur", {"mur_porte_simple_blanche_brique", "mur_porte_simple_blanche_clin", "mur_porte_simple_blanche_crepi", "mur_porte_simple_blanche_enduit", "mur_porte_simple_blanche_pierre"}},
+		x_mur_porte_simple_bois = {"Mur", {"mur_porte_simple_bois_brique", "mur_porte_simple_bois_clin", "mur_porte_simple_bois_crepi", "mur_porte_simple_bois_enduit", "mur_porte_simple_bois_pierre"}},
+		x_mur_porte_simple_deco = {"Mur", {"mur_porte_simple_deco_brique", "mur_porte_simple_deco_clin", "mur_porte_simple_deco_crepi", "mur_porte_simple_deco_enduit", "mur_porte_simple_deco_pierre"}},
+		x_mur_porte_simple_pleine = {"Mur", {"mur_porte_simple_pleine_brique", "mur_porte_simple_pleine_clin", "mur_porte_simple_pleine_crepi", "mur_porte_simple_pleine_enduit", "mur_porte_simple_pleine_pierre"}},
+		x_mur_porte_simple_verre_sombre = {"Mur", {"mur_porte_simple_verre_sombre_brique", "mur_porte_simple_verre_sombre_clin", "mur_porte_simple_verre_sombre_crepi", "mur_porte_simple_verre_sombre_enduit", "mur_porte_simple_verre_sombre_pierre"}},
+		x_mur_porte_verre_sombre = {"Mur", {"mur_porte_verre_sombre_brique", "mur_porte_verre_sombre_clin", "mur_porte_verre_sombre_crepi", "mur_porte_verre_sombre_enduit", "mur_porte_verre_sombre_pierre"}},
+		toits = {"Plafond", {"toit_plat", "toit_membrane", "toit_clair", "toit_bac", "toit"}},
+		x_toits_bords = {"Plafond", {"toit_bac_bord_x", "toit_bac_bord_y", "toit_bord", "toit_clair_bord"}},
+		x_toits_angles = {"Plafond", {"toit_angle", "toit_bac_angle", "toit_bac_angle2", "toit_clair_angle"}},
+		stations_energie = {"Furniture", {"E2_Barils", "E3_Pompes", "E4_Bornes"}},
+		stations_lavage = {"Furniture", {"L2_Seaux", "L3_Karcher", "L4_Rouleaux"}},
+		stations_pieces = {"Furniture", {"E7_Teinte", "E6_Peinture", "E5_Pneus"}},
+		caisses = {"Furniture", {"2", "1"}},
+		etagere = {"Furniture", {"4", "rayonnage_vide"}},
+		carton = {"Furniture", {"3", "carton_petit", "carton_moyen", "carton_grand"}},
+		x_barrieres = {"Furniture", {"barriere_arceau", "barriere_grille", "barriere_potelets", "barriere_rails", "barriere_verre"}},
+		x_plantes = {"Furniture", {"buisson_boule", "colonne_taillee", "haie_bloc", "jardiniere_fleurs", "jardiniere_longue", "pot_buisson", "pot_cactus", "topiaire_boule", "topiaire_cone"}},
+	}
+	-- cartes supplementaires (pas de sprite : apercu 3D) : id -> {onglet, titre}
+	local CARTES_EXTRA = {
+		{"x_goudron", "sol", "Goudron", true},              -- en premier dans l'onglet sol (true = tete de liste)
+		{"x_toits_bords", "toit", "Toit · bords"},
+		{"x_toits_angles", "toit", "Toit · angles"},
+		{"x_barrieres", "mobilier", "Barrières"},
+		{"x_plantes", "mobilier", "Plantes & décor"},
+		{"x_mur_fenetre_haute", "murs", "Fenêtre haute"},
+		{"x_mur_fenetre_grille", "murs", "Fenêtre grillagée"},
+		{"x_mur_fenetre_arche_croix", "murs", "Fenêtre arche à croisillons"},
+		{"x_mur_fenetre_arche_pleine", "murs", "Fenêtre arche pleine"},
+		{"x_mur_fenetre_arche_vitrine", "murs", "Fenêtre arche vitrine"},
+		{"x_mur_baie_arche_nue", "murs", "Baie en arche nue"},
+		{"x_mur_baie_barreaudee", "murs", "Baie barreaudée"},
+		{"x_mur_baie_croisee", "murs", "Baie croisée"},
+		{"x_mur_baie_grille", "murs", "Baie grillagée"},
+		{"x_mur_baie_simple", "murs", "Baie simple"},
+		{"x_mur_deux_baies", "murs", "Deux baies"},
+		{"x_mur_porte", "murs", "Ouverture"},
+		{"x_mur_porte_blanche", "murs", "Porte blanche"},
+		{"x_mur_porte_deco", "murs", "Porte décorée"},
+		{"x_mur_porte_double_bois", "murs", "Double porte bois"},
+		{"x_mur_porte_double_verte", "murs", "Double porte verte"},
+		{"x_mur_porte_imposte", "murs", "Porte à imposte"},
+		{"x_mur_porte_pleine", "murs", "Porte pleine"},
+		{"x_mur_porte_service_bois", "murs", "Porte de service bois"},
+		{"x_mur_porte_service_verte", "murs", "Porte de service verte"},
+		{"x_mur_porte_service_vitree", "murs", "Porte de service vitrée"},
+		{"x_mur_porte_simple_blanche", "murs", "Porte simple blanche"},
+		{"x_mur_porte_simple_bois", "murs", "Porte simple bois"},
+		{"x_mur_porte_simple_deco", "murs", "Porte simple décorée"},
+		{"x_mur_porte_simple_pleine", "murs", "Porte simple pleine"},
+		{"x_mur_porte_simple_verre_sombre", "murs", "Porte simple verre sombre"},
+		{"x_mur_porte_verre_sombre", "murs", "Porte verre sombre"},
+	}
+	-- cartes sans sprite ajoutees aux donnees de l'interface (apercu 3D de chaque variante)
+	for _, c in ipairs(CARTES_EXTRA) do
+		local id, onglet, titre = c[1], c[2], c[3]
+		DATA[onglet] = DATA[onglet] or {}
+		local deja = false
+		for _, it in ipairs(DATA[onglet]) do if it.id == id then deja = true end end
+		if not deja then
+			local item = {id = id, name = titre, labels = {}, frames = 0, fw = 180, fh = 180, assetId = 0, titre3D = titre}
+			if c[4] then table.insert(DATA[onglet], 1, item) else table.insert(DATA[onglet], item) end
+		end
+	end
+	-- variantes d'une carte : seules celles dont le modele existe sont proposees (les autres sont annoncees "bientot")
+	local function variantes(id)
+		local c = CARTES[id]
+		if not c then return nil, {} end
+		return c[1], c[2]
+	end
+	local function objetDe(id, idx)
+		local cat_, liste = variantes(id)
+		local nom = liste[idx + 1]
+		if not (cat_ and nom) then return nil end
+		local dossier = RS:FindFirstChild(cat_)
+		if not (dossier and dossier:FindFirstChild(nom)) then return nil end
+		return cat_, nom
+	end
+	-- apercu 3D d'un modele du catalogue dans une carte (a la place du sprite quand il n'y en a pas)
+	local function apercu3D(card, cat_, nom)
+		local vp = card:FindFirstChild("Apercu")
+		if not vp then
+			vp = Instance.new("ViewportFrame"); vp.Name = "Apercu"; vp.Size = card.Img.Size; vp.Position = card.Img.Position; vp.AnchorPoint = card.Img.AnchorPoint
+			vp.ZIndex = card.Img.ZIndex; vp.BackgroundTransparency = 1; vp.Ambient = Color3.fromRGB(170, 170, 170); vp.LightColor = Color3.fromRGB(255, 250, 240); vp.LightDirection = Vector3.new(-1, -2, -1)
+			vp.Parent = card
+		end
+		for _, ch in ipairs(vp:GetChildren()) do ch:Destroy() end
+		local dossier = cat_ and RS:FindFirstChild(cat_)
+		local modele = dossier and nom and dossier:FindFirstChild(nom)
+		if not modele then vp.Visible = false; return end
+		local world = Instance.new("WorldModel"); world.Parent = vp
+		local m = modele:Clone()
+		for _, d in ipairs(m:GetDescendants()) do if d:IsA("BaseScript") or d:IsA("Sound") then d:Destroy() end end
+		m.Parent = world
+		local cf, taille = m:GetBoundingBox()
+		local piv = m:GetPivot()
+		local diag = taille.Magnitude
+		local cam = Instance.new("Camera"); cam.FieldOfView = 30; cam.Parent = vp; vp.CurrentCamera = cam
+		local dist = (diag / 2) / math.tan(math.rad(cam.FieldOfView / 2)) * 1.05
+		-- murs : on regarde la face avant (axe X du pivot) ; sinon vue de trois quarts
+		local dir = (cat_ == "Mur") and (piv.XVector * 1 + piv.YVector * 0.35 + piv.ZVector * 0.45) or (piv.XVector * 0.8 + piv.YVector * 0.7 + piv.ZVector * 1)
+		cam.CFrame = CFrame.lookAt(cf.Position + dir.Unit * dist, cf.Position)
+		vp.Visible = true
+	end
+	local categorieActuelle = "mobilier"
+	local function fill(cat)
+		categorieActuelle = cat
+		for _, c in ipairs(bd.Art.Center:GetChildren()) do if c:IsA("Frame") then c:Destroy() end end
+		for _, k in ipairs({"sol", "murs", "mobilier", "toit"}) do local v = bd.Art.Variants:FindFirstChild("V_" .. k) if v then v.Visible = (k == cat) end end
+		for i, it in ipairs(DATA[cat] or {}) do
+			local card = tpl:Clone(); card.Visible = true; card.Name = it.id; card.Position = UDim2.fromOffset(4 + (i - 1) * 212, 4)
+			local idx = 0
+			local _, liste = variantes(it.id)
+			local total = math.max(#liste, it.frames or 0, 1)
+			local function paint()
+				local cat_, nom = objetDe(it.id, idx)
+				local infos = cat_ and Catalogue.GetInfo(cat_, nom)
+				local prix = infos and infos.Prix
+				local sprite = (it.frames or 0) > idx and (it.assetId or 0) ~= 0
+				if sprite then
+					card.Img.Visible = true
+					card.Img.Image = "rbxassetid://" .. tostring(it.assetId)
+					card.Img.ImageRectSize = Vector2.new(it.fw, it.fh); card.Img.ImageRectOffset = Vector2.new(idx * it.fw, 0)
+					local vp = card:FindFirstChild("Apercu"); if vp then vp.Visible = false end
+				else
+					card.Img.Visible = false
+					apercu3D(card, cat_, nom or liste[idx + 1])
+				end
+				card.Counter.Text = (idx + 1) .. " / " .. total; card.Counter.Visible = total > 1; card.Prev.Visible = total > 1; card.Next.Visible = total > 1
+				local libelle = it.labels[idx + 1]
+				if not libelle then
+					if infos then
+						libelle = (infos.Nom or nom or "") .. (infos.Matiere and (" · " .. infos.Matiere) or "")
+					else
+						libelle = liste[idx + 1] or ""
+					end
+				end
+				card.Tex.Text = libelle .. (prix and ("  ·  " .. prix .. " $") or (cat_ and "" or "  ·  bientôt"))
+				for _, d in ipairs(card.Dots:GetChildren()) do if d:IsA("Frame") then d:Destroy() end end
+				if total > 1 then
+					local taille = (total > 8) and 5 or 8
+					for j = 1, total do local d = Instance.new("Frame"); d.Size = UDim2.fromOffset(taille, taille); d.BackgroundColor3 = (j == idx + 1) and Color3.fromHex("ffd257") or Color3.new(1, 1, 1); d.BackgroundTransparency = (j == idx + 1) and 0 or 0.45; d.BorderSizePixel = 0; d.LayoutOrder = j; d.ZIndex = 26; d.Parent = card.Dots; Instance.new("UICorner", d).CornerRadius = UDim.new(1, 0) end
+				end
+			end
+			pressFx(card.Prev); pressFx(card.Next); pressFx(card.Select)
+			card.Prev.Activated:Connect(function() idx = (idx - 1 + total) % total; paint() end)
+			card.Next.Activated:Connect(function() idx = (idx + 1) % total; paint() end)
+			card.Select.Activated:Connect(function()
+				local cat_, nom = objetDe(it.id, idx)
+				if not cat_ then message("Cet objet n'est pas encore disponible dans le jeu", true) return end
+				for _, c2 in ipairs(bd.Art.Center:GetChildren()) do if c2:IsA("Frame") and c2:FindFirstChild("FrameSel") then c2.FrameSel.Visible = (c2 == card); c2.Frame.Visible = (c2 ~= card) end end
+				if ClientBuild then
+					ClientBuild.DestroyLaser()
+					ActionManager.ChangerMode("Construction", it.id .. ":" .. idx)
+					ClientBuild.CreatePhantom(nom, cat_)
+					if cat_ == "Mur" then
+						message("Le mur se colle au bord de case le plus proche de la souris  ·  clic au sol ou Place pour poser  ·  R ou Rotate pour retourner la face avant", false, 5)
+					else
+						message("Déplace la souris et clique au sol (ou bouton Place) pour poser  ·  R ou Rotate pour tourner", false, 4)
+					end
+				end
+			end)
+			paint(); card.Parent = bd.Art.Center
+		end
+		bd.Art.Center.CanvasSize = UDim2.fromOffset(8 + #(DATA[cat] or {}) * 212, 0); bd.Art.Center.CanvasPosition = Vector2.new(0, 0)
+	end
+	for n, cat in pairs(CATS) do local b = bd.Left[n]; pressFx(b); b.Activated:Connect(function() if ClientBuild then ClientBuild.DestroyPhantom(); ClientBuild.DestroyLaser() end fill(cat) end) end
+	for _, n in ipairs({"Rotate", "Place", "Delete", "Cancel", "Close"}) do pressFx(bd.Top[n]) end
+	bd.Top.Rotate.Activated:Connect(function()
+		if not ClientBuild then return end
+		if not ClientBuild.EnPlacement() then message("Sélectionne d'abord un objet (bouton ✓ d'une carte)", true) return end
+		local o, txt = ClientBuild.Tourner(); message(txt or ("Rotation : " .. (o * 90) .. "°"), false, 1.5)
+	end)
+	bd.Top.Place.Activated:Connect(function()
+		if not ClientBuild then return end
+		if not ClientBuild.EnPlacement() then message("Sélectionne d'abord un objet (bouton ✓ d'une carte)", true) return end
+		local ok, raison = ClientBuild.Poser()
+		if ok then play("buy") else message((ClientBuild.EnDeplacement and ClientBuild.EnDeplacement()) and ("Déplacement refusé : " .. tostring(raison)) or ("Placement refusé : " .. tostring(raison)), true) end
+	end)
+	bd.Top.Delete.Activated:Connect(function() if ClientBuild then ClientBuild.DestroyPhantom(); ClientBuild.CreateLaser(); message("Mode suppression : clique un objet pour le retirer (remboursé)", true, 3) end end)
+	bd.Top.Cancel.Activated:Connect(function() if ClientBuild then ClientBuild.DestroyPhantom(); ClientBuild.DestroyLaser() end ActionManager.ChangerMode("Aucun"); toast.Visible = false end)
+	bd.Top.Close.Activated:Connect(function() showTab(nil) end)
+	local astuceDonnee = false
+	ouvrir.Build = function()
+		if ClientBuild then ClientCamera.Activer(); ClientBuild.CreateExtension(); if ClientBuild.ActiverDeplacement then ClientBuild.ActiverDeplacement() end end
+		fill(categorieActuelle)
+		if not astuceDonnee then
+			astuceDonnee = true
+			message("Astuce : maintiens le clic et glisse pour poser en série  ·  clique un objet déjà posé pour le déplacer (gratuit)", false, 6)
+		end
+	end
+	prechauffer.Build = function()
+		for _, c in ipairs({"sol", "murs", "mobilier", "toit"}) do fill(c); task.wait(0.5) end
+		fill(categorieActuelle)
+	end
+	fermer.Build = function()
+		ActionManager.ChangerMode("Aucun")
+		if ClientBuild then ClientBuild.DestroyPhantom(); ClientBuild.DestroyLaser(); ClientBuild.DestroyExtension(); if ClientBuild.DesactiverDeplacement then ClientBuild.DesactiverDeplacement() end end
+		ClientCamera.Desactiver()
+	end
+end)
+
+-- ===== pre-rendu : chaque panneau est affiche une fois, en entier, derriere l'ecran de chargement =====
+-- PreloadAsync ne fait que telecharger les images : Roblox ne les decode et ne les envoie a la carte graphique que la
+-- premiere fois qu'elles sont dessinees a leur vraie taille, d'ou des panneaux flous et saccades a la premiere
+-- ouverture. Ici on dessine tout (barre, 5 panneaux, les 4 categories de construction, le panneau des rangs) pendant
+-- quelques images alors que l'ecran de chargement (au-dessus, opaque) cache encore tout.
+local function prerendu()
+	loading.Root.Status.Text = "Préparation de l'interface…"
+	main.Enabled = true
+	hud.Position = UDim2.fromOffset(0, 0)
+	for _, n in ipairs(TABS) do
+		local p = menus[n]
+		p.Visible = true
+		local art = p:FindFirstChild("Art")
+		if art then art.GroupTransparency = 0; art.Position = UDim2.fromOffset(0, 0) end
+		if prechauffer[n] then pcall(prechauffer[n]) elseif ouvrir[n] then pcall(ouvrir[n]) end
+		task.wait(0.6)                 -- le temps que la pleine resolution arrive et soit dessinee
+		if fermer[n] then pcall(fermer[n]) end
+		p.Visible = false
+	end
+	menus.Ranks.Visible = true; task.wait(0.4); menus.Ranks.Visible = false
+	-- les cartes creees pendant le pre-rendu (sprites du menu Construction) sont maintenant residentes elles aussi
+	for _, o in ipairs(pg:GetDescendants()) do garderResident(o) end
+	task.wait(0.8)
+end
+pcall(prerendu)
+terminerChargement()

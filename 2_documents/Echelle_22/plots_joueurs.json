@@ -1,0 +1,1528 @@
+{
+ "repere": "Roblox studs, centre de la map = (0,0,0) avant import ; Y = sol (herbe 0 / chaussee 0.57 / trottoir et parvis 1.27)",
+ "trottoir_largeur_studs": 10.85,
+ "demi_cote_map_studs": 1343.65,
+ "plots": [
+  {
+   "nom": "Plot1",
+   "case_studs": 10,
+   "nx_colonnes_U": 35,
+   "ny_rangees_V": 55,
+   "origine_coin_tunnel_branche": [
+    1195.9,
+    0.0,
+    -215.9
+   ],
+   "axe_U_vers_angle_de_la_map": [
+    0.0,
+    0,
+    -1.0
+   ],
+   "axe_V_du_tunnel_vers_le_centre": [
+    -1.0,
+    0,
+    0.0
+   ],
+   "centre_case(i,j)": "origine + U*(i+0.5)*10 + V*(j+0.5)*10",
+   "nb_cases_valides": 1912,
+   "cases_exclues_(i,j)": [
+    [
+     24,
+     54
+    ],
+    [
+     25,
+     54
+    ],
+    [
+     26,
+     54
+    ],
+    [
+     27,
+     54
+    ],
+    [
+     28,
+     54
+    ],
+    [
+     29,
+     54
+    ],
+    [
+     30,
+     54
+    ],
+    [
+     31,
+     54
+    ],
+    [
+     32,
+     54
+    ],
+    [
+     33,
+     53
+    ],
+    [
+     33,
+     54
+    ],
+    [
+     34,
+     53
+    ],
+    [
+     34,
+     54
+    ]
+   ],
+   "boite_englobante_XZ_min_max": [
+    645.9,
+    -565.8,
+    1195.9,
+    -215.8
+   ],
+   "bouche_du_tunnel": [
+    1195.9,
+    0.0,
+    -190.0
+   ],
+   "direction_sortie_voitures": [
+    -1,
+    0,
+    0
+   ],
+   "angle_droit_branche_route_du_tour": [
+    645.9,
+    0.0,
+    -215.9
+   ],
+   "annexe_3x3": {
+    "origine": [
+     815.9,
+     0.0,
+     -164.2
+    ],
+    "axe_I": [
+     0.0,
+     0,
+     1.0
+    ],
+    "axe_J": [
+     -1.0,
+     0,
+     0.0
+    ],
+    "n": 3,
+    "case_studs": 10,
+    "centre_case(i,j)": "origine + axe_I*(i+0.5)*10 + axe_J*(j+0.5)*10"
+   },
+   "acces_entree_sortie": [
+    {
+     "nom": "Entree",
+     "cases_i": [
+      2,
+      4
+     ],
+     "largeur_studs": 30,
+     "milieu_bord_chaussee": [
+      635.0,
+      0.57,
+      -250.9
+     ],
+     "milieu_bord_plot": [
+      645.9,
+      0.57,
+      -250.9
+     ],
+     "direction_vers_le_plot": [
+      1.0,
+      0,
+      0.0
+     ],
+     "coins_traversee_bord_plot": [
+      [
+       645.9,
+       0.0,
+       -235.9
+      ],
+      [
+       645.9,
+       0.0,
+       -265.9
+      ]
+     ]
+    },
+    {
+     "nom": "Sortie",
+     "cases_i": [
+      17,
+      19
+     ],
+     "largeur_studs": 30,
+     "milieu_bord_chaussee": [
+      635.0,
+      0.57,
+      -400.8
+     ],
+     "milieu_bord_plot": [
+      645.9,
+      0.57,
+      -400.8
+     ],
+     "direction_vers_le_plot": [
+      1.0,
+      0,
+      0.0
+     ],
+     "coins_traversee_bord_plot": [
+      [
+       645.9,
+       0.0,
+       -385.9
+      ],
+      [
+       645.9,
+       0.0,
+       -415.9
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "nom": "Plot2",
+   "case_studs": 10,
+   "nx_colonnes_U": 35,
+   "ny_rangees_V": 55,
+   "origine_coin_tunnel_branche": [
+    1195.9,
+    0.0,
+    215.9
+   ],
+   "axe_U_vers_angle_de_la_map": [
+    0.0,
+    0,
+    1.0
+   ],
+   "axe_V_du_tunnel_vers_le_centre": [
+    -1.0,
+    0,
+    0.0
+   ],
+   "centre_case(i,j)": "origine + U*(i+0.5)*10 + V*(j+0.5)*10",
+   "nb_cases_valides": 1912,
+   "cases_exclues_(i,j)": [
+    [
+     24,
+     54
+    ],
+    [
+     25,
+     54
+    ],
+    [
+     26,
+     54
+    ],
+    [
+     27,
+     54
+    ],
+    [
+     28,
+     54
+    ],
+    [
+     29,
+     54
+    ],
+    [
+     30,
+     54
+    ],
+    [
+     31,
+     54
+    ],
+    [
+     32,
+     54
+    ],
+    [
+     33,
+     53
+    ],
+    [
+     33,
+     54
+    ],
+    [
+     34,
+     53
+    ],
+    [
+     34,
+     54
+    ]
+   ],
+   "boite_englobante_XZ_min_max": [
+    645.9,
+    215.8,
+    1195.9,
+    565.8
+   ],
+   "bouche_du_tunnel": [
+    1195.9,
+    0.0,
+    190.0
+   ],
+   "direction_sortie_voitures": [
+    -1,
+    0,
+    0
+   ],
+   "angle_droit_branche_route_du_tour": [
+    645.9,
+    0.0,
+    215.9
+   ],
+   "annexe_3x3": {
+    "origine": [
+     815.9,
+     0.0,
+     164.2
+    ],
+    "axe_I": [
+     0.0,
+     0,
+     -1.0
+    ],
+    "axe_J": [
+     -1.0,
+     0,
+     0.0
+    ],
+    "n": 3,
+    "case_studs": 10,
+    "centre_case(i,j)": "origine + axe_I*(i+0.5)*10 + axe_J*(j+0.5)*10"
+   },
+   "acces_entree_sortie": [
+    {
+     "nom": "Entree",
+     "cases_i": [
+      2,
+      4
+     ],
+     "largeur_studs": 30,
+     "milieu_bord_chaussee": [
+      635.0,
+      0.57,
+      250.9
+     ],
+     "milieu_bord_plot": [
+      645.9,
+      0.57,
+      250.9
+     ],
+     "direction_vers_le_plot": [
+      1.0,
+      0,
+      0.0
+     ],
+     "coins_traversee_bord_plot": [
+      [
+       645.9,
+       0.0,
+       235.9
+      ],
+      [
+       645.9,
+       0.0,
+       265.9
+      ]
+     ]
+    },
+    {
+     "nom": "Sortie",
+     "cases_i": [
+      17,
+      19
+     ],
+     "largeur_studs": 30,
+     "milieu_bord_chaussee": [
+      635.0,
+      0.57,
+      400.8
+     ],
+     "milieu_bord_plot": [
+      645.9,
+      0.57,
+      400.8
+     ],
+     "direction_vers_le_plot": [
+      1.0,
+      0,
+      0.0
+     ],
+     "coins_traversee_bord_plot": [
+      [
+       645.9,
+       0.0,
+       385.9
+      ],
+      [
+       645.9,
+       0.0,
+       415.9
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "nom": "Plot3",
+   "case_studs": 10,
+   "nx_colonnes_U": 35,
+   "ny_rangees_V": 55,
+   "origine_coin_tunnel_branche": [
+    -215.9,
+    0.0,
+    -1195.9
+   ],
+   "axe_U_vers_angle_de_la_map": [
+    -1.0,
+    0,
+    0.0
+   ],
+   "axe_V_du_tunnel_vers_le_centre": [
+    0.0,
+    0,
+    1.0
+   ],
+   "centre_case(i,j)": "origine + U*(i+0.5)*10 + V*(j+0.5)*10",
+   "nb_cases_valides": 1912,
+   "cases_exclues_(i,j)": [
+    [
+     24,
+     54
+    ],
+    [
+     25,
+     54
+    ],
+    [
+     26,
+     54
+    ],
+    [
+     27,
+     54
+    ],
+    [
+     28,
+     54
+    ],
+    [
+     29,
+     54
+    ],
+    [
+     30,
+     54
+    ],
+    [
+     31,
+     54
+    ],
+    [
+     32,
+     54
+    ],
+    [
+     33,
+     53
+    ],
+    [
+     33,
+     54
+    ],
+    [
+     34,
+     53
+    ],
+    [
+     34,
+     54
+    ]
+   ],
+   "boite_englobante_XZ_min_max": [
+    -565.8,
+    -1195.9,
+    -215.8,
+    -645.9
+   ],
+   "bouche_du_tunnel": [
+    -190.0,
+    0.0,
+    -1195.9
+   ],
+   "direction_sortie_voitures": [
+    0,
+    0,
+    1
+   ],
+   "angle_droit_branche_route_du_tour": [
+    -215.9,
+    0.0,
+    -645.9
+   ],
+   "annexe_3x3": {
+    "origine": [
+     -164.2,
+     0.0,
+     -815.9
+    ],
+    "axe_I": [
+     1.0,
+     0,
+     0.0
+    ],
+    "axe_J": [
+     0.0,
+     0,
+     1.0
+    ],
+    "n": 3,
+    "case_studs": 10,
+    "centre_case(i,j)": "origine + axe_I*(i+0.5)*10 + axe_J*(j+0.5)*10"
+   },
+   "acces_entree_sortie": [
+    {
+     "nom": "Entree",
+     "cases_i": [
+      2,
+      4
+     ],
+     "largeur_studs": 30,
+     "milieu_bord_chaussee": [
+      -250.9,
+      0.57,
+      -635.0
+     ],
+     "milieu_bord_plot": [
+      -250.9,
+      0.57,
+      -645.9
+     ],
+     "direction_vers_le_plot": [
+      0.0,
+      0,
+      -1.0
+     ],
+     "coins_traversee_bord_plot": [
+      [
+       -235.9,
+       0.0,
+       -645.9
+      ],
+      [
+       -265.9,
+       0.0,
+       -645.9
+      ]
+     ]
+    },
+    {
+     "nom": "Sortie",
+     "cases_i": [
+      17,
+      19
+     ],
+     "largeur_studs": 30,
+     "milieu_bord_chaussee": [
+      -400.8,
+      0.57,
+      -635.0
+     ],
+     "milieu_bord_plot": [
+      -400.8,
+      0.57,
+      -645.9
+     ],
+     "direction_vers_le_plot": [
+      0.0,
+      0,
+      -1.0
+     ],
+     "coins_traversee_bord_plot": [
+      [
+       -385.9,
+       0.0,
+       -645.9
+      ],
+      [
+       -415.9,
+       0.0,
+       -645.9
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "nom": "Plot4",
+   "case_studs": 10,
+   "nx_colonnes_U": 35,
+   "ny_rangees_V": 55,
+   "origine_coin_tunnel_branche": [
+    215.9,
+    0.0,
+    -1195.9
+   ],
+   "axe_U_vers_angle_de_la_map": [
+    1.0,
+    0,
+    0.0
+   ],
+   "axe_V_du_tunnel_vers_le_centre": [
+    0.0,
+    0,
+    1.0
+   ],
+   "centre_case(i,j)": "origine + U*(i+0.5)*10 + V*(j+0.5)*10",
+   "nb_cases_valides": 1912,
+   "cases_exclues_(i,j)": [
+    [
+     24,
+     54
+    ],
+    [
+     25,
+     54
+    ],
+    [
+     26,
+     54
+    ],
+    [
+     27,
+     54
+    ],
+    [
+     28,
+     54
+    ],
+    [
+     29,
+     54
+    ],
+    [
+     30,
+     54
+    ],
+    [
+     31,
+     54
+    ],
+    [
+     32,
+     54
+    ],
+    [
+     33,
+     53
+    ],
+    [
+     33,
+     54
+    ],
+    [
+     34,
+     53
+    ],
+    [
+     34,
+     54
+    ]
+   ],
+   "boite_englobante_XZ_min_max": [
+    215.8,
+    -1195.9,
+    565.8,
+    -645.9
+   ],
+   "bouche_du_tunnel": [
+    190.0,
+    0.0,
+    -1195.9
+   ],
+   "direction_sortie_voitures": [
+    0,
+    0,
+    1
+   ],
+   "angle_droit_branche_route_du_tour": [
+    215.9,
+    0.0,
+    -645.9
+   ],
+   "annexe_3x3": {
+    "origine": [
+     164.2,
+     0.0,
+     -815.9
+    ],
+    "axe_I": [
+     -1.0,
+     0,
+     0.0
+    ],
+    "axe_J": [
+     0.0,
+     0,
+     1.0
+    ],
+    "n": 3,
+    "case_studs": 10,
+    "centre_case(i,j)": "origine + axe_I*(i+0.5)*10 + axe_J*(j+0.5)*10"
+   },
+   "acces_entree_sortie": [
+    {
+     "nom": "Entree",
+     "cases_i": [
+      2,
+      4
+     ],
+     "largeur_studs": 30,
+     "milieu_bord_chaussee": [
+      250.9,
+      0.57,
+      -635.0
+     ],
+     "milieu_bord_plot": [
+      250.9,
+      0.57,
+      -645.9
+     ],
+     "direction_vers_le_plot": [
+      0.0,
+      0,
+      -1.0
+     ],
+     "coins_traversee_bord_plot": [
+      [
+       235.9,
+       0.0,
+       -645.9
+      ],
+      [
+       265.9,
+       0.0,
+       -645.9
+      ]
+     ]
+    },
+    {
+     "nom": "Sortie",
+     "cases_i": [
+      17,
+      19
+     ],
+     "largeur_studs": 30,
+     "milieu_bord_chaussee": [
+      400.8,
+      0.57,
+      -635.0
+     ],
+     "milieu_bord_plot": [
+      400.8,
+      0.57,
+      -645.9
+     ],
+     "direction_vers_le_plot": [
+      0.0,
+      0,
+      -1.0
+     ],
+     "coins_traversee_bord_plot": [
+      [
+       385.9,
+       0.0,
+       -645.9
+      ],
+      [
+       415.9,
+       0.0,
+       -645.9
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "nom": "Plot5",
+   "case_studs": 10,
+   "nx_colonnes_U": 35,
+   "ny_rangees_V": 55,
+   "origine_coin_tunnel_branche": [
+    -1195.9,
+    0.0,
+    215.9
+   ],
+   "axe_U_vers_angle_de_la_map": [
+    0.0,
+    0,
+    1.0
+   ],
+   "axe_V_du_tunnel_vers_le_centre": [
+    1.0,
+    0,
+    0.0
+   ],
+   "centre_case(i,j)": "origine + U*(i+0.5)*10 + V*(j+0.5)*10",
+   "nb_cases_valides": 1912,
+   "cases_exclues_(i,j)": [
+    [
+     24,
+     54
+    ],
+    [
+     25,
+     54
+    ],
+    [
+     26,
+     54
+    ],
+    [
+     27,
+     54
+    ],
+    [
+     28,
+     54
+    ],
+    [
+     29,
+     54
+    ],
+    [
+     30,
+     54
+    ],
+    [
+     31,
+     54
+    ],
+    [
+     32,
+     54
+    ],
+    [
+     33,
+     53
+    ],
+    [
+     33,
+     54
+    ],
+    [
+     34,
+     53
+    ],
+    [
+     34,
+     54
+    ]
+   ],
+   "boite_englobante_XZ_min_max": [
+    -1195.9,
+    215.8,
+    -645.9,
+    565.8
+   ],
+   "bouche_du_tunnel": [
+    -1195.9,
+    0.0,
+    190.0
+   ],
+   "direction_sortie_voitures": [
+    1,
+    0,
+    0
+   ],
+   "angle_droit_branche_route_du_tour": [
+    -645.9,
+    0.0,
+    215.9
+   ],
+   "annexe_3x3": {
+    "origine": [
+     -815.9,
+     0.0,
+     164.2
+    ],
+    "axe_I": [
+     0.0,
+     0,
+     -1.0
+    ],
+    "axe_J": [
+     1.0,
+     0,
+     0.0
+    ],
+    "n": 3,
+    "case_studs": 10,
+    "centre_case(i,j)": "origine + axe_I*(i+0.5)*10 + axe_J*(j+0.5)*10"
+   },
+   "acces_entree_sortie": [
+    {
+     "nom": "Entree",
+     "cases_i": [
+      2,
+      4
+     ],
+     "largeur_studs": 30,
+     "milieu_bord_chaussee": [
+      -635.0,
+      0.57,
+      250.9
+     ],
+     "milieu_bord_plot": [
+      -645.9,
+      0.57,
+      250.9
+     ],
+     "direction_vers_le_plot": [
+      -1.0,
+      0,
+      0.0
+     ],
+     "coins_traversee_bord_plot": [
+      [
+       -645.9,
+       0.0,
+       235.9
+      ],
+      [
+       -645.9,
+       0.0,
+       265.9
+      ]
+     ]
+    },
+    {
+     "nom": "Sortie",
+     "cases_i": [
+      17,
+      19
+     ],
+     "largeur_studs": 30,
+     "milieu_bord_chaussee": [
+      -635.0,
+      0.57,
+      400.8
+     ],
+     "milieu_bord_plot": [
+      -645.9,
+      0.57,
+      400.8
+     ],
+     "direction_vers_le_plot": [
+      -1.0,
+      0,
+      0.0
+     ],
+     "coins_traversee_bord_plot": [
+      [
+       -645.9,
+       0.0,
+       385.9
+      ],
+      [
+       -645.9,
+       0.0,
+       415.9
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "nom": "Plot6",
+   "case_studs": 10,
+   "nx_colonnes_U": 35,
+   "ny_rangees_V": 55,
+   "origine_coin_tunnel_branche": [
+    -1195.9,
+    0.0,
+    -215.9
+   ],
+   "axe_U_vers_angle_de_la_map": [
+    0.0,
+    0,
+    -1.0
+   ],
+   "axe_V_du_tunnel_vers_le_centre": [
+    1.0,
+    0,
+    0.0
+   ],
+   "centre_case(i,j)": "origine + U*(i+0.5)*10 + V*(j+0.5)*10",
+   "nb_cases_valides": 1912,
+   "cases_exclues_(i,j)": [
+    [
+     24,
+     54
+    ],
+    [
+     25,
+     54
+    ],
+    [
+     26,
+     54
+    ],
+    [
+     27,
+     54
+    ],
+    [
+     28,
+     54
+    ],
+    [
+     29,
+     54
+    ],
+    [
+     30,
+     54
+    ],
+    [
+     31,
+     54
+    ],
+    [
+     32,
+     54
+    ],
+    [
+     33,
+     53
+    ],
+    [
+     33,
+     54
+    ],
+    [
+     34,
+     53
+    ],
+    [
+     34,
+     54
+    ]
+   ],
+   "boite_englobante_XZ_min_max": [
+    -1195.9,
+    -565.8,
+    -645.9,
+    -215.8
+   ],
+   "bouche_du_tunnel": [
+    -1195.9,
+    0.0,
+    -190.0
+   ],
+   "direction_sortie_voitures": [
+    1,
+    0,
+    0
+   ],
+   "angle_droit_branche_route_du_tour": [
+    -645.9,
+    0.0,
+    -215.9
+   ],
+   "annexe_3x3": {
+    "origine": [
+     -815.9,
+     0.0,
+     -164.2
+    ],
+    "axe_I": [
+     0.0,
+     0,
+     1.0
+    ],
+    "axe_J": [
+     1.0,
+     0,
+     0.0
+    ],
+    "n": 3,
+    "case_studs": 10,
+    "centre_case(i,j)": "origine + axe_I*(i+0.5)*10 + axe_J*(j+0.5)*10"
+   },
+   "acces_entree_sortie": [
+    {
+     "nom": "Entree",
+     "cases_i": [
+      2,
+      4
+     ],
+     "largeur_studs": 30,
+     "milieu_bord_chaussee": [
+      -635.0,
+      0.57,
+      -250.9
+     ],
+     "milieu_bord_plot": [
+      -645.9,
+      0.57,
+      -250.9
+     ],
+     "direction_vers_le_plot": [
+      -1.0,
+      0,
+      0.0
+     ],
+     "coins_traversee_bord_plot": [
+      [
+       -645.9,
+       0.0,
+       -235.9
+      ],
+      [
+       -645.9,
+       0.0,
+       -265.9
+      ]
+     ]
+    },
+    {
+     "nom": "Sortie",
+     "cases_i": [
+      17,
+      19
+     ],
+     "largeur_studs": 30,
+     "milieu_bord_chaussee": [
+      -635.0,
+      0.57,
+      -400.8
+     ],
+     "milieu_bord_plot": [
+      -645.9,
+      0.57,
+      -400.8
+     ],
+     "direction_vers_le_plot": [
+      -1.0,
+      0,
+      0.0
+     ],
+     "coins_traversee_bord_plot": [
+      [
+       -645.9,
+       0.0,
+       -385.9
+      ],
+      [
+       -645.9,
+       0.0,
+       -415.9
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "nom": "Plot7",
+   "case_studs": 10,
+   "nx_colonnes_U": 35,
+   "ny_rangees_V": 55,
+   "origine_coin_tunnel_branche": [
+    215.9,
+    0.0,
+    1195.9
+   ],
+   "axe_U_vers_angle_de_la_map": [
+    1.0,
+    0,
+    0.0
+   ],
+   "axe_V_du_tunnel_vers_le_centre": [
+    0.0,
+    0,
+    -1.0
+   ],
+   "centre_case(i,j)": "origine + U*(i+0.5)*10 + V*(j+0.5)*10",
+   "nb_cases_valides": 1912,
+   "cases_exclues_(i,j)": [
+    [
+     24,
+     54
+    ],
+    [
+     25,
+     54
+    ],
+    [
+     26,
+     54
+    ],
+    [
+     27,
+     54
+    ],
+    [
+     28,
+     54
+    ],
+    [
+     29,
+     54
+    ],
+    [
+     30,
+     54
+    ],
+    [
+     31,
+     54
+    ],
+    [
+     32,
+     54
+    ],
+    [
+     33,
+     53
+    ],
+    [
+     33,
+     54
+    ],
+    [
+     34,
+     53
+    ],
+    [
+     34,
+     54
+    ]
+   ],
+   "boite_englobante_XZ_min_max": [
+    215.8,
+    645.9,
+    565.8,
+    1195.9
+   ],
+   "bouche_du_tunnel": [
+    190.0,
+    0.0,
+    1195.9
+   ],
+   "direction_sortie_voitures": [
+    0,
+    0,
+    -1
+   ],
+   "angle_droit_branche_route_du_tour": [
+    215.9,
+    0.0,
+    645.9
+   ],
+   "annexe_3x3": {
+    "origine": [
+     164.2,
+     0.0,
+     815.9
+    ],
+    "axe_I": [
+     -1.0,
+     0,
+     0.0
+    ],
+    "axe_J": [
+     0.0,
+     0,
+     -1.0
+    ],
+    "n": 3,
+    "case_studs": 10,
+    "centre_case(i,j)": "origine + axe_I*(i+0.5)*10 + axe_J*(j+0.5)*10"
+   },
+   "acces_entree_sortie": [
+    {
+     "nom": "Entree",
+     "cases_i": [
+      2,
+      4
+     ],
+     "largeur_studs": 30,
+     "milieu_bord_chaussee": [
+      250.9,
+      0.57,
+      635.0
+     ],
+     "milieu_bord_plot": [
+      250.9,
+      0.57,
+      645.9
+     ],
+     "direction_vers_le_plot": [
+      0.0,
+      0,
+      1.0
+     ],
+     "coins_traversee_bord_plot": [
+      [
+       235.9,
+       0.0,
+       645.9
+      ],
+      [
+       265.9,
+       0.0,
+       645.9
+      ]
+     ]
+    },
+    {
+     "nom": "Sortie",
+     "cases_i": [
+      17,
+      19
+     ],
+     "largeur_studs": 30,
+     "milieu_bord_chaussee": [
+      400.8,
+      0.57,
+      635.0
+     ],
+     "milieu_bord_plot": [
+      400.8,
+      0.57,
+      645.9
+     ],
+     "direction_vers_le_plot": [
+      0.0,
+      0,
+      1.0
+     ],
+     "coins_traversee_bord_plot": [
+      [
+       385.9,
+       0.0,
+       645.9
+      ],
+      [
+       415.9,
+       0.0,
+       645.9
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "nom": "Plot8",
+   "case_studs": 10,
+   "nx_colonnes_U": 35,
+   "ny_rangees_V": 55,
+   "origine_coin_tunnel_branche": [
+    -215.9,
+    0.0,
+    1195.9
+   ],
+   "axe_U_vers_angle_de_la_map": [
+    -1.0,
+    0,
+    0.0
+   ],
+   "axe_V_du_tunnel_vers_le_centre": [
+    0.0,
+    0,
+    -1.0
+   ],
+   "centre_case(i,j)": "origine + U*(i+0.5)*10 + V*(j+0.5)*10",
+   "nb_cases_valides": 1912,
+   "cases_exclues_(i,j)": [
+    [
+     24,
+     54
+    ],
+    [
+     25,
+     54
+    ],
+    [
+     26,
+     54
+    ],
+    [
+     27,
+     54
+    ],
+    [
+     28,
+     54
+    ],
+    [
+     29,
+     54
+    ],
+    [
+     30,
+     54
+    ],
+    [
+     31,
+     54
+    ],
+    [
+     32,
+     54
+    ],
+    [
+     33,
+     53
+    ],
+    [
+     33,
+     54
+    ],
+    [
+     34,
+     53
+    ],
+    [
+     34,
+     54
+    ]
+   ],
+   "boite_englobante_XZ_min_max": [
+    -565.8,
+    645.9,
+    -215.8,
+    1195.9
+   ],
+   "bouche_du_tunnel": [
+    -190.0,
+    0.0,
+    1195.9
+   ],
+   "direction_sortie_voitures": [
+    0,
+    0,
+    -1
+   ],
+   "angle_droit_branche_route_du_tour": [
+    -215.9,
+    0.0,
+    645.9
+   ],
+   "annexe_3x3": {
+    "origine": [
+     -164.2,
+     0.0,
+     815.9
+    ],
+    "axe_I": [
+     1.0,
+     0,
+     0.0
+    ],
+    "axe_J": [
+     0.0,
+     0,
+     -1.0
+    ],
+    "n": 3,
+    "case_studs": 10,
+    "centre_case(i,j)": "origine + axe_I*(i+0.5)*10 + axe_J*(j+0.5)*10"
+   },
+   "acces_entree_sortie": [
+    {
+     "nom": "Entree",
+     "cases_i": [
+      2,
+      4
+     ],
+     "largeur_studs": 30,
+     "milieu_bord_chaussee": [
+      -250.9,
+      0.57,
+      635.0
+     ],
+     "milieu_bord_plot": [
+      -250.9,
+      0.57,
+      645.9
+     ],
+     "direction_vers_le_plot": [
+      0.0,
+      0,
+      1.0
+     ],
+     "coins_traversee_bord_plot": [
+      [
+       -235.9,
+       0.0,
+       645.9
+      ],
+      [
+       -265.9,
+       0.0,
+       645.9
+      ]
+     ]
+    },
+    {
+     "nom": "Sortie",
+     "cases_i": [
+      17,
+      19
+     ],
+     "largeur_studs": 30,
+     "milieu_bord_chaussee": [
+      -400.8,
+      0.57,
+      635.0
+     ],
+     "milieu_bord_plot": [
+      -400.8,
+      0.57,
+      645.9
+     ],
+     "direction_vers_le_plot": [
+      0.0,
+      0,
+      1.0
+     ],
+     "coins_traversee_bord_plot": [
+      [
+       -385.9,
+       0.0,
+       645.9
+      ],
+      [
+       -415.9,
+       0.0,
+       645.9
+      ]
+     ]
+    }
+   ]
+  }
+ ],
+ "acces_note": "Entree et sortie de chaque plot sur le trottoir de la route du tour : la chaussee continue a plat (Y 0.57) sur 30 studs (double voie, 3 cases i) jusqu'au bord du plot ; de chaque cote le trottoir descend en rampe de 11 studs (dalles 1.27 -> 0.57). Entree = cases i 2-4 (cote branche du tunnel), Sortie = cases i 17-19. Collisions : 'entree_plot' (plat) et 'rampe_plot' (inclinees)."
+}

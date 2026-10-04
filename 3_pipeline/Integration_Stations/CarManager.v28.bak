@@ -1,0 +1,1186 @@
+local CarManager = {}
+local PlayerData = require(game:GetService("ServerScriptService"):WaitForChild("PlayerData"))
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Catalogue = require(ReplicatedStorage:WaitForChild("Catalogue"))
+local HttpService = game:GetService("HttpService")
+
+local Sessions = {}
+
+local Car = require(ReplicatedStorage:WaitForChild("Catalogue"):WaitForChild("Car"))
+local Circulation = require(game:GetService("ServerScriptService"):WaitForChild("Circulation"))   -- couloirs de 2 cases, vitesses
+
+local MovePnjEvent = ReplicatedStorage:WaitForChild("MovePnjEvent")
+local MoveCarEvent = ReplicatedStorage:WaitForChild("MoveCarEvent")
+
+-- ======================================================================================================================
+-- STATIONS ANIMEES (ReplicatedStorage > Stations)
+--   Le serveur ne calcule aucun mouvement : il pose sur le modele 3D de la station l'attribut "CycleDebut" (heure
+--   serveur du debut du service) et un ObjectValue "VoitureCycle" (la voiture cliente). Chez chaque joueur, le module
+--   Stations > Client cache cette voiture, anime une copie soudee a la station, puis la re-affiche quand CycleDebut
+--   revient a 0. Le serveur attend simplement la duree du cycle (CYCLE, donnees de la station) : ce sont ces donnees,
+--   et jamais le client, qui font foi pour l'economie (stock consomme, paiement, XP).
+-- ======================================================================================================================
+
+local StationsDossier = ReplicatedStorage:FindFirstChild("Stations")
+local Y_LOIN = 36        -- distance (studs, repere du modele) d'ou arrive / ou repart la voiture dans les animations
+
+-- donnees d'une station (module ReplicatedStorage > Stations > Donnees > <nom du meuble>), nil si le meuble n'en a pas
+local function donneesStation(nomStation)
+	local dossier = StationsDossier and StationsDossier:FindFirstChild("Donnees")
+	local mod = dossier and dossier:FindFirstChild(nomStation)
+	if not mod then return nil end
+	local ok, D = pcall(require, mod)
+	return ok and type(D) == "table" and D or nil
+end
+
+-- modele 3D d'un meuble du plot (attribut FurnitureID pose par PlotManager)
+local function trouverMeuble(player, furnitureID)
+	local folder = workspace.Plots:FindFirstChild(player.Name .. "'s plot")
+	if not folder then return nil end
+	for _, objet in ipairs(folder:GetChildren()) do
+		if objet:GetAttribute("FurnitureID") == furnitureID then return objet end
+	end
+	return nil
+end
+
+-- position de la voiture dans la voie de la station : y = position le long de la voie (repere du modele ;
+-- nil = place de stationnement, -Y_LOIN = point de sortie). Le Socle de la station porte le repere du modele.
+local function pointStation(meuble, D, y)
+	local socle = meuble and meuble:FindFirstChild("Socle")
+	if not (socle and D) then return nil end
+	local parc = D.PARC or (D.SEGMENTS and D.SEGMENTS[1] and D.SEGMENTS[1].parc)
+	if not parc then return nil end
+	local pos = socle.CFrame * Vector3.new(parc[1], y or parc[2], parc[3])
+	local dir = socle.CFrame:VectorToWorldSpace(Vector3.new(0, -1, 0))     -- la voiture regarde vers -Y du modele
+	return CFrame.lookAt(pos, pos + dir)
+end
+
+-- lance le cycle de la station chez les joueurs ; renvoie {meuble, D, fin} (fin = os.clock() de fin de service)
+local function lancerCycle(player, station, stationID, car)
+	local meuble = trouverMeuble(player, stationID)
+	local D = meuble and donneesStation(station.Name)
+	if not (meuble and D and meuble:FindFirstChild("Socle")) then
+		return {fin = os.clock() + 5}                                       -- meuble sans animation : service symbolique
+	end
+	local ov = meuble:FindFirstChild("VoitureCycle")
+	if not ov then ov = Instance.new("ObjectValue"); ov.Name = "VoitureCycle"; ov.Parent = meuble end
+	ov.Value = car
+	meuble:SetAttribute("CycleDebut", workspace:GetServerTimeNow())
+	return {meuble = meuble, D = D, fin = os.clock() + (D.CYCLE or 20)}
+end
+
+-- fin du cycle : la voiture reelle est posee au point de sortie de la station, le client la re-affiche
+local function finirCycle(cycle, car)
+	local meuble = cycle.meuble
+	if meuble and meuble.Parent then
+		local cf = pointStation(meuble, cycle.D, -Y_LOIN)
+		if cf and car.Parent then car:PivotTo(cf) end
+		meuble:SetAttribute("CycleDebut", 0)
+		local ov = meuble:FindFirstChild("VoitureCycle")
+		if ov then ov.Value = nil end
+	end
+end
+
+-- ======================================================================================================================
+-- PROVISOIRES
+-- ======================================================================================================================
+
+local function PickRandomCar(player: Player)
+
+	local rank, probas  = PlayerData.GetRank(player)
+
+	local rand = math.random()
+	local cumulative = 0
+	local tier = 1
+
+	for i, chance in ipairs(probas) do
+		cumulative = cumulative + chance
+		if rand <= cumulative then
+			tier = i
+			break
+		end
+	end
+
+	local nomTier = Car.Ordre[tier]
+	local pool = Car[nomTier]
+	return pool.Models[math.random(1, #pool.Models)], nomTier
+end
+
+-- ======================================================================================================================
+-- STATIONS
+-- ======================================================================================================================
+
+local LONGUEUR_VOITURE = 16      -- longueur des voitures clientes (studs) : celle des animations des stations
+local VITESSE = 32               -- vitesse des voitures sur la route (studs/s) : 45 etait trop rapide a l'echelle des joueurs
+local CADENCE_MIN, CADENCE_MAX = 14, 24   -- secondes entre deux clients d'un joueur (cadence volontairement basse pour l'instant)
+
+-- Direction avant d'un modele de voiture d'apres ses roues : centre des roues avant - centre des roues arriere
+-- (memes conventions de noms que Stations/Voiture : roue/wheel/pneu/tire ; AV/FL/FR/Front = avant, AR/RL/RR/Rear = arriere).
+local function estRoue(n)
+	n = string.lower(n)
+	return n:find("wheel") or n:find("roue") or n:find("pneu") or n:find("tire") or n:find("tyre")
+end
+local function genreRoue(n)
+	n = string.upper(n)
+	if n:find("FL") or n:find("FR") or n:find("AV") or n:find("FRONT") then return 1 end
+	if n:find("RL") or n:find("RR") or n:find("AR") or n:find("REAR") or n:find("BACK") then return -1 end
+	return 0
+end
+local function SensDeMarche(car)
+	local sommeAV, nAV, sommeAR, nAR = Vector3.zero, 0, Vector3.zero, 0
+	for _, p in ipairs(car:GetDescendants()) do
+		if p:IsA("BasePart") then
+			local cle = nil
+			local a = p.Parent
+			while a and a ~= car do
+				if a:IsA("Model") and estRoue(a.Name) then cle = a.Name end
+				a = a.Parent
+			end
+			if not cle and estRoue(p.Name) then cle = p.Name end
+			if cle then
+				local g = genreRoue(cle)
+				if g == 1 then sommeAV += p.Position; nAV += 1
+				elseif g == -1 then sommeAR += p.Position; nAR += 1 end
+			end
+		end
+	end
+	if nAV == 0 or nAR == 0 then return nil end
+	local d = sommeAV / nAV - sommeAR / nAR
+	d = Vector3.new(d.X, 0, d.Z)
+	if d.Magnitude < 0.5 then return nil end
+	return d.Unit
+end
+
+-- longueur (facultatif) : longueur voulue du vehicule en studs (defaut LONGUEUR_VOITURE ; le camion de livraison en passe 24)
+local function SpawnCar(carTemplate, longueur)
+
+	local car = carTemplate:Clone()
+	longueur = longueur or LONGUEUR_VOITURE
+
+	-- mise a l'echelle : les modeles sources font ~29 studs, les stations sont animees pour 16
+	local ext = car:GetExtentsSize()
+	local L = math.max(ext.X, ext.Z)
+	if L > 0 and math.abs(L - longueur) > 0.3 then
+		car:ScaleTo(car:GetScale() * longueur / L)
+	end
+
+	local centre, taille = car:GetBoundingBox()
+
+	-- Sens de marche : le Root regarde vers l'AVANT de la voiture (LookVector), quel que soit le sens dans lequel le
+	-- modele a ete importe. L'avant = le cote des roues avant (Roue_AV*, *FL/FR/Front) par rapport aux roues arriere ;
+	-- sans roues nommees, l'axe horizontal le plus long de la boite, dans le sens actuel du modele.
+	local avant = SensDeMarche(car) or ((taille.X > taille.Z) and centre.RightVector or centre.LookVector)
+	avant = Vector3.new(avant.X, 0, avant.Z)
+	if avant.Magnitude < 1e-3 then avant = centre.LookVector end
+	local bas = centre.Position - Vector3.new(0, taille.Y / 2, 0)
+
+	local racine = Instance.new("Part")
+	racine.Name = "Root"
+	racine.Size = Vector3.new(1, 1, 1)
+	racine.Transparency = 1
+	racine.CanCollide = false
+	racine.CanQuery = false
+	racine.CanTouch = false
+	racine.Anchored = true
+	racine.CFrame = CFrame.lookAt(bas, bas + avant.Unit)
+	racine.Parent = car
+
+	for _, piece in ipairs(car:GetDescendants()) do
+		if piece:IsA("BasePart") and piece ~= racine then
+			piece.CanCollide = false
+			piece.CanQuery = false
+			piece.CanTouch = false
+			piece.Anchored = false
+
+			local weld = Instance.new("WeldConstraint")
+			weld.Part0 = racine
+			weld.Part1 = piece
+			weld.Parent = racine
+		end
+	end
+
+	car.PrimaryPart = racine
+	-- la voiture arrive entiere chez les joueurs (StreamingEnabled) : le client des stations la mesure et la copie
+	pcall(function() car.ModelStreamingMode = Enum.ModelStreamingMode.Atomic end)
+
+	return car
+end
+
+-- Fait rouler la voiture jusqu'a 'target' (BasePart ou CFrame) le long d'une courbe de Bezier (tween cote client),
+-- en attendant la fin du trajet. Vitesse : VITESSE studs/s.
+-- vitesse (facultatif) : studs/s pour ce trajet (defaut VITESSE = vitesse de route) ; voir Circulation.VITESSE_*
+local function AnimationNodeCar(car, target, last, vitesse)
+	local root = car.PrimaryPart
+	if not root then return end
+
+	local startCFrame = root.CFrame
+	local targetCFrame = (typeof(target) == "CFrame") and target or target.CFrame
+
+	local duree = 0
+	local p0 = startCFrame.Position
+	local p2 = targetCFrame.Position
+	local k = (p2 - p0).Magnitude * 0.39
+	local controle1 = p0 + startCFrame.LookVector * k
+	local controle2 = p2 - targetCFrame.LookVector * k
+
+	local distance = 0
+	local precedent = p0
+	for i = 1, 20 do
+		local t = i / 20
+		local u = 1 - t
+		local point = u^3 * p0 + 3 * u^2 * t * controle1 + 3 * u * t^2 * controle2 + t^3 * p2
+		distance = distance + (point - precedent).Magnitude
+		precedent = point
+	end
+	duree = distance / (vitesse or VITESSE)
+
+	local etatanimation = 0
+	if last then
+		etatanimation = 2 
+	end
+
+	MoveCarEvent:FireAllClients(car, targetCFrame, duree, etatanimation)
+
+	task.wait(duree)
+
+	car:PivotTo(targetCFrame)
+end
+
+-- station utilisable : un employe (ou automatique) et du stock
+local function StationUtilisable(station)
+	return station.Worker ~= nil and (station.Quantity or 0) > 0
+end
+
+-- place de parking d'une station (CFrame monde) : voie du Socle du modele, sinon le milieu des cases du meuble
+local function PlaceStation(player, station, stationID, pivot)
+	local meuble = trouverMeuble(player, stationID)
+	local cf = pointStation(meuble, meuble and donneesStation(station.Name))
+	if not cf then
+		cf = pivot * CFrame.new(10 * station.X - 5, 0, 10 * station.Z - 10) * CFrame.Angles(0, math.rad(station.Orientation * 90), 0)
+	end
+	return cf
+end
+
+-- une station est DESSERVIE si un couloir de 2 cases de goudron relie l'entree du plot a son entree, et sa sortie a la
+-- sortie du plot (Circulation). Renvoie ok, cfParc, cheminAller, cheminRetour
+local function StationDesservie(player, session, spawnFolder, station, stationID, carte)
+	carte = carte or Circulation.Carte(player)
+	if not carte then return false end
+	local cf = PlaceStation(player, station, stationID, session.Pivot)
+	local ok, aller, retour = Circulation.StationDesservie(carte, session.Pivot, spawnFolder, cf)
+	return ok, cf, aller, retour
+end
+
+-- une station utilisable, libre et desservie, sinon nil
+local function FindStation(player, carID, session, spawnFolder)
+	
+	local data = PlayerData.GetData(player)
+	if not data or not data.Stations then 
+		return nil 
+	end
+	local carte = Circulation.Carte(player)
+
+	for furnitureID, station in pairs(data.Stations) do
+
+		if station.Service == "Available" and StationUtilisable(station) then
+			if not (session and spawnFolder) or StationDesservie(player, session, spawnFolder, station, furnitureID, carte) then
+				return furnitureID
+			end
+		end
+	end
+
+	return nil
+end
+
+-- prevenir le joueur (attribut lu par l'interface) : au plus une fois toutes les 30 s par message
+local derniereAlerte = {}
+local function alerter(player, texte)
+	local t = os.clock()
+	local d = derniereAlerte[player.UserId]
+	if d and d.texte == texte and t - d.t < 30 then return end
+	derniereAlerte[player.UserId] = {texte = texte, t = t}
+	player:SetAttribute("Alerte", texte .. " #" .. math.floor(t))
+end
+
+-- le plot peut-il servir des clients ? (au moins une station avec employe et stock ET desservie par un couloir de
+-- goudron de 2 cases de large). S'il a des stations pretes mais aucune desservie, on previent le joueur.
+local function PlotPret(player, session, spawnFolder)
+	local data = PlayerData.GetData(player)
+	if not data or not data.Stations then return false end
+	local carte = (session and spawnFolder) and Circulation.Carte(player) or nil
+	local pretes, desservies = 0, 0
+	for stationID, station in pairs(data.Stations) do
+		if StationUtilisable(station) then
+			pretes += 1
+			if not carte or StationDesservie(player, session, spawnFolder, station, stationID, carte) then desservies += 1 end
+		end
+	end
+	if pretes > 0 and desservies == 0 and carte then
+		alerter(player, "Les clients ne peuvent pas entrer : il faut une route de GOUDRON de 2 cases de large, sans objet ni mur, de l'entree jusqu'a l'entree d'une station, puis de sa sortie jusqu'a la sortie du plot")
+	end
+	return desservies > 0
+end
+
+-- ======================================================================================================================
+-- CAISSES
+-- ======================================================================================================================
+
+-- Y du sol sous un point du plot (dessus des dalles / du meuble) : raycast vers le bas en ignorant voitures et PNJ
+local paramsSol = RaycastParams.new()
+paramsSol.FilterType = Enum.RaycastFilterType.Exclude
+local function YSol(player, position, defaut)
+	local session = Sessions[player.UserId]
+	local exclus = {}
+	if session and session.Dossier then table.insert(exclus, session.Dossier) end
+	local livraisons = workspace:FindFirstChild("Livraisons_" .. player.UserId)
+	if livraisons then table.insert(exclus, livraisons) end
+	paramsSol.FilterDescendantsInstances = exclus
+	local r = workspace:Raycast(position + Vector3.new(0, 12, 0), Vector3.new(0, -30, 0), paramsSol)
+	return r and r.Position.Y or defaut
+end
+
+-- CFrame du PNJ pose sur le sol a la position (x, z) voulue (garde l'orientation)
+local function PoserAuSol(player, cf, pnj)
+	local h = pnj and pnj:GetAttribute("HauteurPivot") or 3.616
+	local y = YSol(player, cf.Position, cf.Position.Y - 3.616) + h
+	return CFrame.new(cf.Position.X, y, cf.Position.Z) * (cf - cf.Position)
+end
+
+local function SpawnPNJ(player, chemin)
+	
+	local SHIRT = {
+		"rbxassetid://138528436805447",
+		"rbxassetid://80830333871459",
+		"rbxassetid://71033496317529",
+		"rbxassetid://70816790979006",
+		"rbxassetid://140586937278948",
+		"rbxassetid://131632108922885",
+		"rbxassetid://84060244930779",
+		"rbxassetid://95830699589240",
+		"rbxassetid://115758286846824",
+		"rbxassetid://132862872734647",
+		"rbxassetid://81493017874957",
+		"rbxassetid://139599168250619",
+		"rbxassetid://119854015225002",
+		"rbxassetid://103909577088774",
+		"rbxassetid://124530303361825",
+		"rbxassetid://126253762887066",
+		"rbxassetid://82347734218831",
+		"rbxassetid://115993858526729",
+		"rbxassetid://113559895731809",
+		"rbxassetid://86402612509722",
+		"rbxassetid://90613236275691",
+		"rbxassetid://78641693904507",
+		"rbxassetid://85199527881977",
+		"rbxassetid://85533941616568",
+		"rbxassetid://114908914496466",
+		"rbxassetid://97929618056405",
+		"rbxassetid://74078763004510",
+		"rbxassetid://137285306371209",
+		"rbxassetid://124745549941640",
+		"rbxassetid://112292152179106",
+		"rbxassetid://133899001594308",
+		"rbxassetid://140154572480718",
+		"rbxassetid://124989244709540",
+		"rbxassetid://88416701498030",
+		"rbxassetid://92729953600781",
+		"rbxassetid://86001769210406",
+		"rbxassetid://134459937973491",
+		"rbxassetid://130147294489532",
+		"rbxassetid://124042583398684",
+		"rbxassetid://87517711746196",
+		"rbxassetid://102706780105054",
+		"rbxassetid://103218925121646",
+		"rbxassetid://132041652694160",
+		"rbxassetid://77038148879421",
+		"rbxassetid://94848045007482",
+		"rbxassetid://82816953758352",
+		"rbxassetid://101921725229215",
+		"rbxassetid://116354919565702",
+		"rbxassetid://126699264367614",
+		"rbxassetid://136425289518076",
+		"rbxassetid://136187683545518",
+		"rbxassetid://90050262101525",
+		"rbxassetid://76965280508870",
+		"rbxassetid://132341608886342",
+		"rbxassetid://113199419147809",
+		"rbxassetid://79925537923932",
+		"rbxassetid://92300237912924",
+		"rbxassetid://75577796451273",
+		"rbxassetid://129041784281181",
+		"rbxassetid://100684224043390",
+		"rbxassetid://136434217651978",
+		"rbxassetid://109324979192704",
+		"rbxassetid://121546458478331",
+		"rbxassetid://94299806891767",
+		"rbxassetid://137051518657499",
+		"rbxassetid://70522377352116",
+		"rbxassetid://82337403843502",
+	}
+
+	local PANTS= {
+			"rbxassetid://77524021339279",
+			"rbxassetid://89197806976582",
+			"rbxassetid://138621966304093",
+			"rbxassetid://79071622306865",
+			"rbxassetid://118630902104212",
+			"rbxassetid://120934216985945",
+			"rbxassetid://88879303877726",
+			"rbxassetid://128528568551136",
+			"rbxassetid://80060390657595",
+			"rbxassetid://131637348012552",
+			"rbxassetid://121290014994966",
+			"rbxassetid://103189355760137",
+			"rbxassetid://117959536467734",
+			"rbxassetid://113297961117366",
+			"rbxassetid://112275866820838",
+			"rbxassetid://97707151016745",
+			"rbxassetid://122714914984514",
+			"rbxassetid://124218707091679",
+			"rbxassetid://129264378099705",
+			"rbxassetid://124970545071660",
+			"rbxassetid://82015771550180",
+			"rbxassetid://90229272178943",
+			"rbxassetid://123452524229568",
+			"rbxassetid://97016634761276",
+			"rbxassetid://108236065700677",
+			"rbxassetid://131479027429464",
+			"rbxassetid://107550379526528",
+			"rbxassetid://113278396571861",
+			"rbxassetid://94133882289998",
+			"rbxassetid://93630084704429",
+	}
+
+	local SKIN= {
+		BrickColor.new("Nougat"),
+		BrickColor.new("Pastel brown"),
+		BrickColor.new("Earth orange"),
+		BrickColor.new("Brown"),
+		BrickColor.new("Light peach")
+	}
+	
+	
+	local plotPivot = Sessions[player.UserId] and Sessions[player.UserId].Pivot
+	if not plotPivot then return nil end
+
+	local pnj = nil
+	local tirage = math.random(1, 2)
+	if tirage == 1 then
+		pnj = ReplicatedStorage.PnjTemplateBoy:Clone()
+	else
+		pnj = ReplicatedStorage.PnjTemplateGirl:Clone()	
+	end
+	pnj.PrimaryPart.Anchored = true
+
+
+	local randomShirt = SHIRT[math.random(1, #SHIRT)]
+	local randomPants = PANTS[math.random(1, #PANTS)]
+	local randomSkin = SKIN[math.random(1, #SKIN)]
+
+	pnj.Shirt.ShirtTemplate = randomShirt
+	pnj.Pants.PantsTemplate = randomPants
+	pnj.BodyColors.HeadColor = randomSkin
+	pnj.BodyColors.LeftArmColor = randomSkin
+	pnj.BodyColors.RightArmColor = randomSkin
+	pnj.BodyColors.LeftLegColor = randomSkin
+	pnj.BodyColors.RightLegColor = randomSkin
+	pnj.BodyColors.TorsoColor = randomSkin
+
+	local X = (chemin[1].x - 0.5) * 10
+	local Z = (chemin[1].z - 0.5) * 10 - 5
+	-- hauteur du pivot au-dessus des pieds (mesuree sur le modele) : le PNJ est pose SUR le sol reel (raycast)
+	local boiteCF, boite = pnj:GetBoundingBox()
+	local hauteurPivot = pnj.PrimaryPart.Position.Y - (boiteCF.Position.Y - boite.Y / 2)
+	if hauteurPivot < 1 or hauteurPivot > 8 then hauteurPivot = 3.616 end
+	pnj:SetAttribute("HauteurPivot", hauteurPivot)
+	pnj:PivotTo(PoserAuSol(player, plotPivot * CFrame.new(X, 3.616, Z), pnj))
+	pnj.Parent = Sessions[player.UserId].Dossier
+
+	return pnj
+end
+
+local function AnimationPNJ(player, pnj, chemin)
+	local plotPivot = Sessions[player.UserId] and Sessions[player.UserId].Pivot
+	if not plotPivot then return end
+	
+	task.wait(0.2)
+	
+	for i = 2, #chemin do
+		local X = (chemin[i].x - 0.5) * 10
+		local Z = (chemin[i].z - 0.5) * 10 - 5
+
+		local ciblePos = PoserAuSol(player, plotPivot * CFrame.new(X, 3.616, Z), pnj).Position
+		local departPos = pnj:GetPivot().Position
+
+		local direction = ciblePos - departPos
+		direction = Vector3.new(direction.X, 0, direction.Z)
+
+		if direction.Magnitude > 0.01 then
+			
+			pnj:PivotTo(CFrame.lookAt(departPos, departPos + direction))
+			
+			local cible = CFrame.lookAt(ciblePos, ciblePos + direction)        -- ciblePos est deja au sol
+			local etatanimation = 1
+			if i == 2 and i == #chemin then
+				etatanimation = 3
+			elseif i == 2 then
+				etatanimation= 0
+			elseif i == #chemin then
+				etatanimation = 2
+			end
+			
+		
+			MovePnjEvent:FireAllClients(pnj, cible, 1, etatanimation)
+			
+			task.wait(1)
+			
+			pnj:PivotTo(cible)
+		end
+	end
+end
+
+local function QueuePNJ(player, pnj, caisse, carID)
+	
+	local plotPivot = Sessions[player.UserId] and Sessions[player.UserId].Pivot
+	if not plotPivot then return nil end
+	
+	local place = table.find(caisse.Queue, carID)
+	if not place then return end
+
+	local dirX, dirZ = 0, 0
+	if caisse.Orientation == 0 then
+		dirX, dirZ = -1, 0
+	elseif caisse.Orientation == 1 then
+		dirX, dirZ = 0, 1
+	elseif caisse.Orientation == 2 then
+		dirX, dirZ = 1, 0
+	elseif caisse.Orientation == 3 then
+		dirX, dirZ = 0, -1
+	end
+
+
+	local caisseWorldX = (caisse.X - 0.5) * 10
+	local caisseWorldZ = (caisse.Z - 0.5) * 10 - 5
+
+	local distances = {5, 6.5, 8, 9.5}
+	local d = distances[place] or 9.5
+
+	local posPNJ    = PoserAuSol(player, plotPivot * CFrame.new(caisseWorldX + dirX * d, 3.616, caisseWorldZ + dirZ * d), pnj)
+	local posCaisse = plotPivot * CFrame.new(caisseWorldX, posPNJ.Position.Y, caisseWorldZ)
+
+	pnj:PivotTo(CFrame.lookAt(posPNJ.Position, posCaisse.Position))
+end
+
+-- Chemin d'un PNJ sur la grille (cases de 10 studs = 1 de large), du depart a la cible, en 4 directions.
+-- strict = true : il marche sur un sol pose, sans traverser les meubles (sauf ceux du depart et de la cible : il sort de
+-- la station et arrive devant la caisse) ni les murs (MurNord = bord +X de la case, MurOuest = bord -Z).
+-- strict = false : ancien comportement (n'importe quel sol), utilise en secours pour ne jamais bloquer un client.
+local function PathToCaisse(player, startX, startZ, cibleX, cibleZ, strict)
+	
+	local Grid = PlayerData.GetGrid(player)
+	if not Grid then return nil end
+	local nx, nz = PlayerData.GetPlotSize(player)
+	nx = nx or PlayerData.MAX_X; nz = nz or PlayerData.MAX_Z
+
+	local function case(x, z) return Grid[x] and Grid[x][z] end
+	local cDepart, cCible = case(startX, startZ), case(cibleX, cibleZ)
+	local meublesOK = {}       -- meubles qu'on a le droit de traverser : celui du depart et celui de la cible
+	if cDepart and cDepart.FurnitureID ~= 0 then meublesOK[cDepart.FurnitureID] = true end
+	if cCible and cCible.FurnitureID ~= 0 then meublesOK[cCible.FurnitureID] = true end
+
+	local function marchable(x, z)
+		local c = case(x, z)
+		if not c or c.Sol == 0 then return false end
+		if not strict then return true end
+		if x < 1 or z < 1 or x > nx or z > nz then return false end
+		if c.Furniture ~= 0 and c.Furniture ~= nil and not meublesOK[c.FurnitureID] then return false end
+		return true
+	end
+	local function mur(x, z, dx, dz)
+		if not strict then return false end
+		local c = case(x, z)
+		if dx == 1 then return c and c.MurNord ~= 0 and c.MurNord ~= nil end
+		if dx == -1 then local v = case(x - 1, z); return v and v.MurNord ~= 0 and v.MurNord ~= nil end
+		if dz == -1 then return c and c.MurOuest ~= 0 and c.MurOuest ~= nil end
+		if dz == 1 then local v = case(x, z + 1); return v and v.MurOuest ~= 0 and v.MurOuest ~= nil end
+		return false
+	end
+	
+	local directions = {
+		{x = 1, z = 0},  -- Droite
+		{x = -1, z = 0}, -- Gauche
+		{x = 0, z = 1},  -- Bas
+		{x = 0, z = -1}  -- Haut
+	}
+
+	local frontiere = {} 
+	local visite = {}
+	local parents = {} 
+
+	table.insert(frontiere, {x = startX, z = startZ})
+	visite[startX .. "_" .. startZ] = true
+
+	while #frontiere > 0 do
+
+		local actuelle = table.remove(frontiere, 1)
+
+		if actuelle.x == cibleX and actuelle.z == cibleZ then
+
+			local chemin = {}
+			local caseRemontee = actuelle
+
+			while caseRemontee do
+				table.insert(chemin, 1, {x = caseRemontee.x, z = caseRemontee.z})
+
+				if caseRemontee.x == startX and caseRemontee.z == startZ then
+					break
+				end
+
+				local indexParent = caseRemontee.x .. "_" .. caseRemontee.z
+				caseRemontee = parents[indexParent]
+			end
+
+			return true, chemin
+		end
+
+		for _, dir in ipairs(directions) do
+			
+			local voisinX = actuelle.x + dir.x
+			local voisinZ = actuelle.z + dir.z
+			local voisin = voisinX .. "_" .. voisinZ
+
+			if not visite[voisin] and marchable(voisinX, voisinZ) and not mur(actuelle.x, actuelle.z, dir.x, dir.z) then
+				visite[voisin] = true
+
+				parents[voisin] = actuelle
+
+				table.insert(frontiere, {x = voisinX, z = voisinZ})
+			end
+		end
+	end
+	
+	return nil 
+end
+
+-- chemin d'un PNJ : d'abord en evitant meubles et murs ; sinon on previent le joueur et on laisse passer (pas de blocage)
+local function CheminPNJ(player, startX, startZ, cibleX, cibleZ)
+	local ok, chemin = PathToCaisse(player, startX, startZ, cibleX, cibleZ, true)
+	if ok then return ok, chemin end
+	alerter(player, "Un client ne trouve pas de passage a pied (1 case de large, sans objet ni mur) entre la station et la caisse : degage un chemin")
+	return PathToCaisse(player, startX, startZ, cibleX, cibleZ, false)
+end
+
+local function FindCaisse(player) 
+
+	local data = PlayerData.GetData(player)
+	if not data or not data.Caisses then 
+		return nil 
+	end
+	
+	for furnitureID, caisse in pairs(data.Caisses) do
+
+		if caisse.Service == "Available" and #caisse.Queue <= 3 then
+
+			return furnitureID
+		end
+	end
+
+	return nil
+end
+
+
+-- ======================================================================================================================
+-- BOUCLE
+-- ======================================================================================================================
+
+local function nbNoeudsDe(spawnFolder) return #spawnFolder.QueueNodes:GetChildren() end
+
+local function CarLifecycle(car, player, spawnFolder)
+
+	local carID = car.Name
+	local session = Sessions[player.UserId]
+	if not session then return end
+	if car:GetAttribute("Achetee") == true then
+		-- voiture achetee au centre : prioritaire, devant tous les clients venus du tunnel (mais derriere une autre achetee)
+		local rang = 1
+		for i, id in ipairs(session.Queue) do
+			local autre = session.Dossier:FindFirstChild(id)
+			if autre and autre:GetAttribute("Achetee") == true then rang = i + 1 end
+		end
+		table.insert(session.Queue, rang, carID)
+	else
+		table.insert(session.Queue, carID)
+	end
+	local position = 0
+	local achetee = car:GetAttribute("Achetee") == true                   -- voiture achetee au centre (prioritaire, arrive par la route)
+
+	local stationID = nil
+	local caisseID = nil
+	local caisse = nil
+	local station = nil
+	
+	local startX, startZ, cibleX, cibleZ = nil
+	
+	local last = 0
+	
+	local pnj= nil
+
+	local cycle = nil            -- cycle de la station en cours : {meuble, D, fin}
+	local lave = false           -- vrai quand le cycle de la station est termine (la voiture peut repartir / etre payee)
+
+	local state = "CAR_QUEUE"
+
+	while car.Parent do
+		local data = PlayerData.GetData(player)
+		if not data then break end
+
+		-- fin du cycle de la station (quel que soit l'etat : le PNJ peut encore etre a la caisse)
+		if cycle and not lave and os.clock() >= cycle.fin then
+			lave = true
+			finirCycle(cycle, car)
+		end
+
+		-- =========================================================================
+		-- ÉTAT 1 : AVANCEMENT DANS LA FILE D'ATTENTE GÉNÉRALE
+		-- =========================================================================
+		if state == "CAR_QUEUE" then
+			-- Regles de la file :
+			--   * les noeuds 1 (devant l'entree) et 2 (carrefour) sont un COULOIR DE PASSAGE : personne n'y attend. Les
+			--     clients venus du tunnel attendent sur la branche a partir du noeud 3 ; les voitures achetees au centre
+			--     attendent sur la route du tour avant le carrefour. On ne descend au noeud 2 / 1 que pour entrer.
+			--   * une voiture achetee au centre est prioritaire : elle est inseree en tete de file.
+			--   * si le plot n'a AUCUNE station utilisable (employe + stock), la voiture ne s'arrete pas : elle passe
+			--     devant le plot et continue jusqu'au despawn (trajet de sortie).
+			local newposition = table.find(session.Queue, carID)
+			local nbNoeuds = #spawnFolder.QueueNodes:GetChildren()          -- autant de places dans la file que de noeuds
+
+			if newposition then
+				if not PlotPret(player, session, spawnFolder) then
+					state = "PASSE"
+				elseif achetee then
+					-- place d'attente (position p -> place p sur la route du tour)
+					if newposition ~= position then
+						position = newposition
+						local target = CarManager.PlaceAttenteAchat(spawnFolder, position)
+						if target then AnimationNodeCar(car, target, true); task.wait(0.3) end
+					end
+					if position == 1 then state = "FIND_STATION" end
+				else
+					-- clients du tunnel : position p -> noeud p + 2 (le noeud 3 est la tete de file), jamais au-dela du dernier noeud
+					local cible = math.min(newposition + 2, nbNoeuds)
+					if position == 0 then position = nbNoeuds + 1 end
+					while position > cible do
+						position = position - 1
+						local target = spawnFolder.QueueNodes:FindFirstChild(tostring(position))
+						if target then
+							local lastnode = (position == cible)
+							AnimationNodeCar(car, target, lastnode)
+							if lastnode then task.wait(0.3) end
+						end
+					end
+					if newposition == 1 then state = "FIND_STATION" end
+				end
+			end
+
+			-- =========================================================================
+			-- ÉTAT 1 bis : LE PLOT NE PEUT PAS SERVIR -> LA VOITURE PASSE SON CHEMIN JUSQU'AU DESPAWN
+			-- =========================================================================
+		elseif state == "PASSE" then
+			local idx = table.find(session.Queue, carID)
+			if idx then table.remove(session.Queue, idx) end
+			if not achetee then
+				-- depuis la branche : descend la file jusqu'au carrefour puis devant l'entree
+				if position == 0 then position = nbNoeudsDe(spawnFolder) + 1 end
+				while position > 1 do
+					position = position - 1
+					local target = spawnFolder.QueueNodes:FindFirstChild(tostring(position))
+					if target then AnimationNodeCar(car, target, position == 1) end
+				end
+			else
+				local n1 = spawnFolder.QueueNodes:FindFirstChild("1")
+				if n1 then AnimationNodeCar(car, n1, false) end
+			end
+			-- puis la route du tour : trajet de sortie a partir du noeud 2 (le 1 est dans le plot)
+			local i = 2
+			local target = spawnFolder.ExitNodes:FindFirstChild(tostring(i))
+			while target do
+				AnimationNodeCar(car, target, false)
+				i = i + 1
+				target = spawnFolder.ExitNodes:FindFirstChild(tostring(i))
+			end
+			car:Destroy()
+			break
+
+			-- =========================================================================
+			-- ÉTAT 2 : RECHERCHE D'UNE STATION DISPONIBLE
+			-- =========================================================================
+		elseif state == "FIND_STATION" then
+			
+			-- toujours en tete de file ? (une voiture achetee au centre a pu s'inserer devant : elle passe d'abord)
+			if table.find(session.Queue, carID) ~= 1 then
+				state = "CAR_QUEUE"
+				continue
+			end
+			stationID = FindStation(player, carID, session, spawnFolder)
+			station = data.Stations and data.Stations[stationID]
+			if station then
+				local okRoute, cf, aller = StationDesservie(player, session, spawnFolder, station, stationID)
+				if not okRoute then
+					-- la route a change entre-temps : on reprend la file
+					state = "CAR_QUEUE"
+					continue
+				end
+				table.remove(session.Queue, 1)
+				state = "WAITING_SERVICE"
+				station.Car = carID
+				station.Service = "Taken"
+
+				-- conduite : on ralentit au carrefour (noeud 2 puis 1 pour les clients du tunnel ; noeud 1 seul pour une
+				-- voiture venue de la route), on entre dans le plot doucement, on suit le couloir de goudron (points de
+				-- virage, plus lent dans les virages), puis on se gare dans la voie de la station.
+				local yPlot = Circulation.YPlot(spawnFolder, session.Pivot)
+				if car:GetAttribute("Achetee") ~= true then
+					local n2 = spawnFolder.QueueNodes:FindFirstChild("2")
+					if n2 then AnimationNodeCar(car, n2, false, Circulation.VITESSE_APPROCHE) end
+				end
+				local n1 = spawnFolder.QueueNodes:FindFirstChild("1")
+				if n1 then AnimationNodeCar(car, n1, false, Circulation.VITESSE_APPROCHE) end
+				local entree = spawnFolder:FindFirstChild("Entree")
+				if entree then AnimationNodeCar(car, entree, false, Circulation.VITESSE_PLOT) end
+				local cfEntreeStation = Circulation.PointsStation(cf)
+				local carte = Circulation.Carte(player)
+				if carte and aller then
+					for _, etape in ipairs(Circulation.Trajet(carte, session.Pivot, aller, yPlot, cfEntreeStation.LookVector)) do
+						if not car.Parent then break end
+						AnimationNodeCar(car, etape.cf, false, etape.vitesse)
+					end
+				end
+				if car.Parent then AnimationNodeCar(car, cfEntreeStation, false, Circulation.VITESSE_STATION) end
+				if car.Parent then AnimationNodeCar(car, cf, true, Circulation.VITESSE_STATION) end
+				if car.Parent then car:PivotTo(cf) end
+			end
+
+
+			-- =========================================================================
+			-- ÉTAT 4 : ATTENTE DES RESSOURCES / EMPLOYÉ À LA STATION
+			-- =========================================================================
+		elseif state == "WAITING_SERVICE" then
+			station = data.Stations and data.Stations[stationID]
+			if not station then
+				PlayerData.AddToRecoveryQueue(player, car:GetAttribute("Name"), car:GetAttribute("Tier"))
+				car:Destroy()
+				break
+			end
+
+			if station.Quantity > 0 and station.Worker ~= nil then
+				-- le service commence : la station s'anime avec cette voiture chez tous les joueurs,
+				-- pendant ce temps le client (PNJ) va payer a la caisse
+				cycle = lancerCycle(player, station, stationID, car)
+				lave = false
+				state = "FIND_CAISSE"
+			end
+	
+			-- =========================================================================
+			-- ÉTAT 5 : RECHERCHE D'UNE CAISSE ET DU CHEMIN ALLER
+			-- =========================================================================
+		elseif state == "FIND_CAISSE" then
+			
+			station = data.Stations and data.Stations[stationID]
+			if not station then
+				PlayerData.AddToRecoveryQueue(player, car:GetAttribute("Name"), car:GetAttribute("Tier"))
+				car:Destroy()
+				break
+			end
+
+			caisseID = FindCaisse(player)
+			if caisseID and data.Caisses and data.Caisses[caisseID] then
+				caisse = data.Caisses[caisseID]
+
+				local infosMeuble = Catalogue.GetInfo("Furniture", station.Name)
+				if infosMeuble and infosMeuble.Pivot == "centre" then
+					startX, startZ = station.X, station.Z            -- pivot central : le PNJ part du milieu de la station
+				elseif station.Orientation == 0 then
+					startX, startZ = station.X + 1, station.Z - 1
+				elseif station.Orientation == 1 then
+					startX, startZ = station.X - 1, station.Z + 1
+				elseif station.Orientation == 2 then
+					startX, startZ = station.X - 1, station.Z + 1
+				elseif station.Orientation == 3 then
+					startX, startZ = station.X + 1, station.Z - 1	
+				end
+
+				if caisse.Orientation == 0 then
+					cibleX, cibleZ = caisse.X - 1, caisse.Z
+				elseif caisse.Orientation == 3 then
+					cibleX, cibleZ = caisse.X, caisse.Z - 1
+				elseif caisse.Orientation == 2 then
+					cibleX, cibleZ = caisse.X + 1, caisse.Z 
+				elseif caisse.Orientation == 1 then
+					cibleX, cibleZ = caisse.X, caisse.Z + 1	
+				end 
+
+				local succes, chemin = CheminPNJ(player, startX, startZ, cibleX, cibleZ)
+				if succes then
+					if PlayerData.JoinQueue(player, caisseID, carID) then
+						
+						pnj = SpawnPNJ(player,chemin)
+						AnimationPNJ(player,pnj,chemin)
+						QueuePNJ(player,pnj,caisse,carID)
+						
+						last = 0
+						state = "QUEUE_CAISSE"
+					end
+				end
+			end
+
+			-- =========================================================================
+			-- ÉTAT 6 : ATTENTE DANS LA FILE DE LA CAISSE ET PAIEMENT
+			-- =========================================================================
+		elseif state == "QUEUE_CAISSE" then
+
+			station = data.Stations and data.Stations[stationID]
+			if not station then
+				PlayerData.AddToRecoveryQueue(player, car:GetAttribute("Name"), car:GetAttribute("Tier"))
+				car:Destroy()
+				PlayerData.LeaveQueue(player, caisseID, carID)
+				pnj:Destroy()
+				break
+			end
+			
+			if not data.Caisses or not data.Caisses[caisseID] then
+				pnj:Destroy()
+				caisseID = nil
+				caisse = nil
+				state = "FIND_CAISSE"
+				continue
+			end
+
+			caisse = data.Caisses[caisseID]
+			local place = table.find(caisse.Queue, carID)
+
+			if place and place ~= last then
+				last = place
+				QueuePNJ(player,pnj,caisse,carID)
+			end
+
+			if place == 1 and caisse.Worker ~= nil then
+				
+				task.wait(3)
+				station = data.Stations and data.Stations[stationID]
+
+				if station then
+					local succes, chemin = CheminPNJ(player, cibleX, cibleZ, startX, startZ)
+					if succes then
+						PlayerData.LeaveQueue(player, caisseID, carID)
+						AnimationPNJ(player, pnj, chemin)
+						pnj:Destroy()
+						state = "COMPLETED"
+					end
+				end
+			end
+ 
+			-- =========================================================================
+			-- ÉTAT 7 : FINALISATION DU SERVICE ET NETTOYAGE
+		elseif state == "COMPLETED" then
+			-- le paiement est encaisse quand le lavage / le service est termine (on attend la fin du cycle)
+			if lave then
+				station = data.Stations and data.Stations[stationID]
+				if station then
+
+					local infos = Catalogue.GetInfo("Consommable", station.Item)
+
+					local Name = car:GetAttribute("Name")
+					local Tier =  car:GetAttribute("Tier")
+
+					if infos and Car[Tier] then
+						-- mutation (script Mutations) : une voiture en or paie x3, en argent x2, electrique x1,5
+						local mutation = car:GetAttribute("Mutation")
+						local bonus = (mutation == "Or" and 3) or (mutation == "Argent" and 2) or (mutation == "Electrique" and 1.5) or 1
+						PlayerData.AddMoney(player, math.floor((infos.Buy +  (infos.Sell - infos.Buy) * Car[Tier].Mult * (station.Mult or 1)) * bonus + 0.5))
+						PlayerData.AddXp(player,50* Car[Tier].Mult)
+						PlayerData.RemoveItemStation(player, stationID)
+						PlayerData.AddCar(player, Name, Tier)
+					end
+				end
+
+				state = "WAIT_EXIT"
+			end
+		
+			-- =========================================================================
+			-- ÉTAT 8 : ATTENTE QUE LE NODE 1 DE SORTIE SOIT LIBRE
+			-- =========================================================================
+		elseif state == "WAIT_EXIT" then
+			if not session.Exit then
+				session.Exit = carID
+
+				station = data.Stations and data.Stations[stationID]
+				if station then
+					station.Car = nil
+					station.Service = "Available"
+				end
+
+				-- la voiture redemarre doucement, sort de la voie de la station, suit le couloir de goudron jusqu'a la
+				-- sortie du plot (ExitNodes/1), puis reaccelere sur la route (etat EXIT)
+				local premier = spawnFolder.ExitNodes:FindFirstChild("1")
+				local carte = Circulation.Carte(player)
+				local _, cfSortieStation = Circulation.PointsStation(car:GetPivot())
+				AnimationNodeCar(car, cfSortieStation, false, Circulation.VITESSE_STATION)
+				if carte and premier then
+					local yPlot = Circulation.YPlot(spawnFolder, session.Pivot)
+					local qbx, qbz = Circulation.BlocDe(carte, session.Pivot, cfSortieStation.Position)
+					local _, _, sbx, sbz = Circulation.BlocsAcces(carte, session.Pivot, spawnFolder)
+					local retour = sbx and Circulation.Chemin(carte, qbx, qbz, sbx, sbz)
+					if retour then
+						for _, etape in ipairs(Circulation.Trajet(carte, session.Pivot, retour, yPlot, premier.CFrame.LookVector)) do
+							if not car.Parent then break end
+							AnimationNodeCar(car, etape.cf, false, etape.vitesse)
+						end
+					else
+						warn("[Cars] sortie de station sans couloir de goudron vers la sortie du plot : la voiture sort en ligne droite")
+					end
+				end
+				if premier and car.Parent then AnimationNodeCar(car, premier, false, Circulation.VITESSE_PLOT) end
+				state = "EXIT"
+			end
+
+			-- =========================================================================
+			-- ÉTAT 9 : SORTIE PAR LES NODES
+			-- =========================================================================
+		elseif state == "EXIT" then
+			local i = 2
+			local target = spawnFolder.ExitNodes:FindFirstChild(tostring(i))
+
+			while target do
+				AnimationNodeCar(car, target, false, (i == 2) and Circulation.VITESSE_APPROCHE or nil)
+
+				if session.Exit == carID then
+					session.Exit = nil
+				end
+
+				i = i + 1
+				target = spawnFolder.ExitNodes:FindFirstChild(tostring(i))
+			end
+
+			car:Destroy()
+			break
+		end
+
+		task.wait(1)
+	end
+
+	-- la voiture a disparu en plein cycle (station detruite, joueur parti...) : la station ne doit pas rester "en service"
+	if cycle and not lave then finirCycle(cycle, car) end
+end
+
+-- ======================================================================================================================
+-- GESTION DU GENERATEUR
+-- ======================================================================================================================
+
+-- utilises aussi par les voitures d'ambiance (CarAmbiance)
+CarManager.SpawnCar = SpawnCar
+CarManager.AnimationNodeCar = AnimationNodeCar
+
+-- ======================================================================================================================
+-- VOITURES ACHETEES AU CENTRE (CarAmbiance) : elles deviennent des clientes du plot de l'acheteur
+-- ======================================================================================================================
+local ESPACE_ATTENTE = 22          -- studs entre deux voitures qui attendent sur la route du tour
+local RECUL_ATTENTE = 65           -- de l'entree (noeud 1) au carrefour de la branche (35) + demi-route et marge (30)
+
+-- place d'attente k (1 = la plus proche) sur la route du tour, avant le carrefour, dans le sens de la file (noeud 1)
+function CarManager.PlaceAttenteAchat(spawnFolder, k)
+	local n1 = spawnFolder:FindFirstChild("QueueNodes") and spawnFolder.QueueNodes:FindFirstChild("1")
+	if not n1 then return nil end
+	local cf = n1.CFrame
+	return cf - cf.LookVector * (RECUL_ATTENTE + ESPACE_ATTENTE * (k - 1))
+end
+
+-- point ou la voiture achetee doit arriver (derniere place d'attente possible = fin du trajet depuis le centre)
+function CarManager.ArriveeAchat(player)
+	local session = Sessions[player.UserId]
+	if not session or not session.SpawnFolder then return nil end
+	local n = 1
+	for _, id in ipairs(session.Queue) do
+		local autre = session.Dossier:FindFirstChild(id)
+		if autre and autre:GetAttribute("Achetee") == true then n += 1 end
+	end
+	return CarManager.PlaceAttenteAchat(session.SpawnFolder, n)
+end
+
+function CarManager.PlotDe(player)
+	local session = Sessions[player.UserId]
+	return session and session.SpawnFolder or nil, session
+end
+
+-- la voiture (deja marquee Achetee, Tier, Name) rejoint la file du plot de l'acheteur
+function CarManager.AccueillirVoitureAchetee(player, car)
+	local session = Sessions[player.UserId]
+	if not session or not session.Dossier.Parent then return false end
+	car.Name = HttpService:GenerateGUID(false)
+	car.Parent = session.Dossier
+	task.spawn(function() CarLifecycle(car, player, session.SpawnFolder) end)
+	return true
+end
+
+function CarManager.Start(player: Player, spawnfolder: Folder) 
+
+	if Sessions[player.UserId] then return end
+
+	local folder = workspace.Plots:FindFirstChild(player.Name .. "'s plot")
+	if not folder then return end
+
+	local dossier = Instance.new("Folder")
+	dossier.Name = "Cars_" .. player.UserId
+	dossier.Parent = workspace
+
+	Sessions[player.UserId] = {
+		Dossier = dossier,
+		Queue = {},
+		Pivot = folder.PlotCenterRef.Value:GetPivot(),
+		Exit = nil,
+		SpawnFolder = spawnfolder,
+	}
+
+	local tunnel = spawnfolder:FindFirstChild("Tunnel")
+
+	task.spawn(function()
+		while dossier.Parent do
+			task.wait(math.random(CADENCE_MIN, CADENCE_MAX))
+
+			if not dossier.Parent then break end
+
+			local carID = HttpService:GenerateGUID(false)
+			local carName, carTier = PlayerData.GetFromRecoveryQueue(player)
+			if not carName or not carTier then
+				carName, carTier = PickRandomCar(player)
+			end
+
+			local carTemplate = Car.Modele(carTier, carName)
+			if not carTemplate then warn("[Cars] modele introuvable : " .. tostring(carTier) .. "/" .. tostring(carName)) continue end
+
+			local car = SpawnCar(carTemplate)
+
+			car.Name = carID
+			car:SetAttribute("Tier", carTier)
+			car:SetAttribute("Name", carName)
+			car.Parent = dossier
+			car:PivotTo(tunnel:GetPivot())
+
+			task.wait(0.3)
+
+			task.spawn(function()
+				CarLifecycle(car, player, spawnfolder)
+			end)
+		end
+	end)
+end
+
+function CarManager.Stop(player: Player)
+	local session = Sessions[player.UserId]
+	if session then
+		session.Dossier:Destroy()
+	end
+
+	Sessions[player.UserId] = nil
+end
+
+return CarManager

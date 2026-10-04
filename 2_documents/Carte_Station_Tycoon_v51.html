@@ -1,0 +1,376 @@
+<title>Carte de Station Tycoon</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@500;700&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400&display=swap">
+<style>
+/* Layout : carte mentale plein écran (racine au centre, 7 familles à droite/gauche), panneau de détail à droite, barre d'outils en haut. */
+:root {
+  --bg: #f3f4f8; --paper: #ffffff; --fg: #1a1d2b; --muted: #5d6478; --line: #c9cdda; --link: #8a90a6;
+  --f1: #2f6fd6; --f2: #2a9d6f; --f3: #d08a1d; --f4: #d14d4d; --f5: #7a4fd0; --f6: #1d9bb8; --f7: #6b7280;
+  --accent: #2f6fd6; --panel-shadow: 0 10px 30px rgba(20, 24, 40, .14);
+  --display: "Sora", "Avenir Next", "Segoe UI", sans-serif; --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif; --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #12141c; --paper: #1b1e29; --fg: #e8eaf2; --muted: #9aa1b8; --line: #343a4d; --link: #5e657c;
+  --f1: #6ea0ff; --f2: #4ccb95; --f3: #f0b14a; --f4: #ff7b7b; --f5: #b094ff; --f6: #4fc3df; --f7: #a2a8b8;
+  --accent: #6ea0ff; --panel-shadow: 0 10px 30px rgba(0, 0, 0, .5); color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #12141c; --paper: #1b1e29; --fg: #e8eaf2; --muted: #9aa1b8; --line: #343a4d; --link: #5e657c;
+  --f1: #6ea0ff; --f2: #4ccb95; --f3: #f0b14a; --f4: #ff7b7b; --f5: #b094ff; --f6: #4fc3df; --f7: #a2a8b8;
+  --accent: #6ea0ff; --panel-shadow: 0 10px 30px rgba(0, 0, 0, .5); color-scheme: dark }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--body); overflow: hidden; }
+#app { position: relative; height: 100%; width: 100%; }
+svg#carte { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+svg#carte:active { cursor: grabbing; }
+.bar { position: absolute; top: env(safe-area-inset-top, 0px); left: 0; right: 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 16px; pointer-events: none; }
+.bar > * { pointer-events: auto; }
+.titre { font-family: var(--display); font-weight: 700; font-size: 18px; letter-spacing: -.01em; margin-right: 6px; text-wrap: balance; background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 6px 12px; }
+.titre small { display: block; font-family: var(--body); font-weight: 400; font-size: 12px; color: var(--muted); letter-spacing: 0; }
+.bar button, .bar input { font: 500 13px var(--body); color: var(--fg); background: var(--paper); border: 1px solid var(--line); border-radius: 8px; padding: 7px 11px; }
+.bar button { cursor: pointer; }
+.bar button:hover { border-color: var(--accent); }
+.bar button:focus-visible, .bar input:focus-visible, .legende button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.bar input { min-width: 0; width: 200px; }
+.legende { position: absolute; left: 16px; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); display: flex; flex-wrap: wrap; gap: 6px 10px; max-width: calc(100% - 32px); }
+.legende button { display: inline-flex; align-items: center; gap: 6px; font: 500 12px var(--body); color: var(--fg); background: var(--paper); border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px 4px 6px; cursor: pointer; }
+.legende i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.aide { position: absolute; right: 16px; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); font: 12px var(--body); color: var(--muted); background: var(--paper); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+#panneau { position: absolute; top: calc(64px + env(safe-area-inset-top, 0px)); right: 16px; width: min(340px, calc(100% - 32px)); max-height: calc(100% - 150px); overflow: auto; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--panel-shadow); padding: 14px 16px 16px; }
+#panneau .fam { font: 500 11px var(--body); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+#panneau h2 { font: 700 17px var(--display); margin: 4px 0 8px; text-wrap: balance; }
+#panneau p { margin: 0 0 10px; line-height: 1.5; font-size: 13.5px; }
+#panneau .chemin { font: 11.5px var(--mono); color: var(--muted); margin-bottom: 10px; overflow-wrap: anywhere; }
+#panneau h3 { font: 500 11px var(--body); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 12px 0 6px; }
+#panneau ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+#panneau li button { all: unset; cursor: pointer; display: flex; gap: 8px; align-items: baseline; font-size: 13px; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--line); width: 100%; box-sizing: border-box; }
+#panneau li button:hover { border-color: var(--accent); }
+#panneau li button i { width: 8px; height: 8px; border-radius: 50%; flex: none; display: inline-block; position: relative; top: -1px; }
+#panneau li button span { color: var(--muted); font-size: 12px; }
+#panneau .fermer { position: absolute; top: 8px; right: 10px; all: unset; cursor: pointer; color: var(--muted); font-size: 18px; line-height: 1; padding: 4px 6px; }
+#panneau .fermer:hover { color: var(--fg); }
+#panneau .code { font: 12px var(--mono); color: var(--muted); }
+/* noeuds */
+.noeud { cursor: pointer; }
+.noeud rect { stroke-width: 1.5; }
+.noeud text { font-family: var(--body); fill: var(--fg); font-size: 12.5px; pointer-events: none; }
+.noeud.famille text { font-family: var(--display); font-weight: 700; font-size: 14px; fill: #fff; }
+.noeud.racine text { font-family: var(--display); font-weight: 700; font-size: 17px; fill: #fff; }
+.noeud .plus { font-family: var(--mono); font-size: 11px; fill: var(--muted); }
+.noeud.famille .plus, .noeud.racine .plus { fill: rgba(255,255,255,.85); }
+.noeud.estompe { opacity: .18; }
+.noeud.cible rect { stroke-width: 3; }
+.lien { fill: none; stroke-width: 1.6; opacity: .75; }
+.lien.estompe { opacity: .08; }
+.croise { fill: none; stroke: var(--link); stroke-width: 1.3; stroke-dasharray: 4 4; opacity: .55; }
+.croise.fort { stroke: var(--accent); stroke-width: 2; opacity: .95; stroke-dasharray: 6 3; }
+.croise.estompe { opacity: .06; }
+@media (prefers-reduced-motion: reduce) { .lien, .noeud { transition: none !important; } }
+@media (max-width: 640px) {
+  .bar input { width: 120px; }
+  .aide { display: none; }
+  #panneau { top: auto; bottom: calc(60px + env(safe-area-inset-bottom, 0px)); right: 16px; left: 16px; width: auto; max-height: 45%; }
+  .legende { bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
+}
+</style>
+
+<div id="app">
+  <svg id="carte" role="img" aria-label="Carte mentale de Station Tycoon : familles, sous-familles et liens"></svg>
+  <div class="bar">
+    <div class="titre">Carte de Station Tycoon<small>v51 · 7 familles · clique un nœud pour l'ouvrir, le détail s'affiche à droite</small></div>
+    <input id="recherche" type="search" placeholder="Rechercher (ex. caisse, goudron, GT3)" aria-label="Rechercher un élément">
+    <button id="btn-tout" type="button">Tout déplier</button>
+    <button id="btn-replier" type="button">Replier</button>
+    <button id="btn-centrer" type="button">Recentrer</button>
+    <button id="btn-liens" type="button" aria-pressed="false">Liens croisés : du nœud choisi</button>
+  </div>
+  <div class="legende" id="legende"></div>
+  <div class="aide">Molette = zoom · glisser = déplacer · clic = ouvrir / fermer · pointillés = lien entre familles</div>
+  <div id="panneau" hidden></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script>
+// ----------------------------------------------------------------------------------------------------------------------
+// Données : { id, n = nom, d = description, l = liens croisés (ids), c = enfants }
+// ----------------------------------------------------------------------------------------------------------------------
+const DONNEES = {
+  id: "racine", n: "STATION TYCOON", d: "Tycoon Roblox de stations (lavage, atelier) : les clients arrivent en voiture par la branche, se font servir, payent à la caisse et repartent par la route du tour. Carte des grandes familles du projet et de leurs liens (état v51).",
+  c: [
+  { id: "map", n: "Map & monde (V21)", cote: "d", d: "La map importée en FBX (MAP_V21c_AVEC_CHAINES) : voirie, trottoirs, herbe, arbres, usines et chaînes de production, 8 emplacements de joueurs. Installée dans la place par InstallerMap, recalée par MapAlignement.", c: [
+    { id: "voirie", n: "Voirie", d: "Chaussée de 50 studs (dessus à 0,57), 2 voies par sens à ±12,5 de l'axe ; trottoirs de 15,9 (dessus à 1,27). Les meshes de voirie sont visuels : les collisions réelles sont des Parts invisibles (DonneesCollisions).", c: [
+      { id: "routetour", n: "Route du tour", d: "Carré d'axe ±516 qui longe le petit côté des plots. Les voitures en SORTENT du plot (voie extérieure) et les voitures achetées au centre y attendent avant le carrefour.", l: ["sortie", "achatcentre"] },
+      { id: "branches", n: "Branches & tunnels", d: "4 branches (axe ±174,7) depuis les têtes de tunnel (±1036,9) jusqu'à la route du tour. Les clients apparaissent dans le tunnel, font la queue sur la branche et ENTRENT dans le plot par son grand côté.", l: ["entree", "file"] },
+      { id: "rondpoints", n: "Ronds-points", d: "4 ronds-points extérieurs (centre ±516/±516, chaussée R 60,5–110,5) et l'anneau central (R 165,4) autour des usines. Conduite à droite = antihoraire ; le van de livraison le coupe à contresens quand c'est plus court.", l: ["livraison", "ambiance"] },
+      { id: "avenues", n: "Avenues", d: "Du centre vers chaque rond-point extérieur : chemin des voitures d'ambiance et des voitures achetées.", l: ["ambiance"] },
+    ]},
+    { id: "terrainmap", n: "Terrain & nature", d: "Herbe en relief (Terrain Grass) dans les espaces verts et les plots, arbres et lampadaires (ARBRES_V17), îlots.", c: [
+      { id: "herbemap", n: "Espaces verts", d: "Rectangles DonneesArbres.herbe remplis en Grass à chaque lancement (InstallerHerbe), haut nominal −1,95 (Roblox dessine ~2 studs plus haut). v51 : débord de 4 studs sous les trottoirs pour que l'herbe arrive au ras de la bordure (voxels de 4).", l: ["terrainplot"] },
+      { id: "arbres", n: "Arbres & lumières", d: "Positions dans DonneesArbres (FBX ARBRES_V17), posés par InstallerMap." },
+      { id: "collisions", n: "Collisions invisibles", d: "Parts invisibles (DonneesCollisions) sous la voirie : le personnage marche dessus, les rayons du mode Supprimer ne sont plus bloqués par l'enveloppe des meshes." },
+    ]},
+    { id: "usines", n: "Usines & chaînes", d: "4 usines NE / NO / SE / SO autour de l'anneau central : chaîne de production M4 (robots, 68 joints), sas avec portes coulissantes (PortesSas). Les voitures d'ambiance en sortent.", l: ["ambiance", "chaine"] },
+    { id: "garages", n: "Garages de livraison", d: "8 garages (cours) atteints par une coupure du trottoir des ronds-points ; le van s'arrête devant la porte ouverte et décharge les cartons.", l: ["livraison"] },
+    { id: "plotspawns", n: "8 PlotSpawns", d: "Un modèle par emplacement (Plot1..8), type A ou B (miroir). Contient PlotCenter (repère de la grille), Tunnel, Camera, PlayerSpawn, Annexe, CasesInterdites, AttenteAchat, ExitNodesFixe ; Acces y crée les nœuds et tabliers à l'exécution.", l: ["grille", "acces"], c: [
+      { id: "typesAB", n: "Type A / type B", d: "A : la branche longe le bord X = 0 (colonnes 1-2) ; B : le bord X = 270 (colonnes 17-18). La route du tour est toujours le bord Z = −7,5 (rangées 1-2). Conduite à droite : la voie de la file est côté plot en A, côté opposé en B." },
+      { id: "interdites", n: "Cases interdites", d: "Le trottoir et la chaussée de la route du tour mordent le coin intérieur du plot (colonnes 12-18, rangées 1-3 en A) : ces cases restent vides et rien ne s'y pose." },
+      { id: "annexe", n: "Annexe 2×2", d: "Petit terrain de l'autre côté de la branche : sols, murs, décor seulement (ni station ni caisse)." },
+    ]},
+    { id: "install", n: "Installation & alignement", d: "InstallerMap (une fois : collisions, arbres, herbe, véhicules, portes), InstallerHerbe (à chaque Jouer : herbe des plots + zones), Lancement (script), MapAlignement (attribut Workspace.DecalageMap). Import FBX Studio : ×0,78125 et rotation 180° corrigés en Lua.", l: ["pipeline"] },
+  ]},
+  { id: "plot", n: "Le plot du joueur", cote: "d", d: "Le terrain de chaque joueur : une grille de cases de 15 studs où il pose sols, murs, décor, stations et caisses, avec une entrée et une sortie qu'il peut déplacer.", c: [
+    { id: "grille", n: "Grille 18 × 11 → 32", d: "18 colonnes le long de la route du tour (toute la largeur, 270 studs) × 11 rangées de départ, jusqu'à 32 (480 studs) avec les extensions. Case (x, z) centrée en ((x−0,5)·15, (z−1)·15) dans le repère du PlotCenter. Mémorisée dans data.Grid (Sol, Furniture, Murs, Plafond).", l: ["profil", "couloirs"] },
+    { id: "extensions", n: "Extensions", d: "droit1..3 (+3 rangées chacune) et haut1..3 (+4) : zones vertes achetables au sol (ClientBuild.CreateExtension → Extensionfunction → PlotManager.BuyExtension). Catalogue Extension.", l: ["catalogue"] },
+    { id: "acces", n: "Entrée & sortie (v51)", d: "Module serveur Acces : l'ENTRÉE est sur le bord de la branche (2 rangées), la SORTIE sur le bord de la route du tour (2 colonnes). Déplaçables en mode Déplacer (fantôme qui glisse le long du bord, AccesFunction). Mémorisées dans data.Acces.", l: ["cyclevie", "couloirs", "file"], c: [
+      { id: "entree", n: "Entrée (branche)", d: "Rangées zE, zE+1 (3 au minimum, dans la profondeur achetée). Tablier de bitume 30×30 dans le plot + bande sur le trottoir. Nœuds : Entree (BlocX/BlocZ), EntreeTrottoir, QueueNodes 1..N sur la branche, AchatNodes 1-2 (voie opposée).", l: ["branches"] },
+      { id: "sortie", n: "Sortie (route du tour)", d: "Colonnes xS, xS+1 des rangées 1-2 (pas au coin du carrefour ni sur une case interdite). Nœuds ExitNodes : 1 dans le plot, 2 trottoir, 3 voie extérieure, puis la queue fixe cuite par gen_map (vers la fin de map ou le rond-point).", l: ["routetour"] },
+      { id: "trottoirsegments", n: "Segments de trottoir (V21d, à venir)", d: "Quand la map aura des segments Trottoir_PlotN_B_rr / _R_cc, Acces cachera ceux de l'accès et le tablier sera au ras de la chaussée. En attendant la bande de bitume couvre le trottoir et la voiture monte dessus.", l: ["avenir"] },
+    ]},
+    { id: "construction", n: "Construction", d: "PlotManager (serveur : Place, Deplacer, Destroy, grille, terrain, bordures) et ClientBuild (client : fantôme, pose en série au glisser, rotation R, déplacement gratuit, laser de suppression). Pack de meshes PACK_10_3 agrandi ×1,5.", l: ["onglets", "catalogue"], c: [
+      { id: "sols", n: "Sols", d: "Goudron / route / béton (roulables par les voitures), parquets, carrelages, extérieur… Dessus à 0,57 comme la chaussée. Un sol de goudron qui touche l'herbe reçoit une bordure de trottoir automatique.", l: ["couloirs"] },
+      { id: "murs", n: "Murs & plafonds", d: "Murs sur les bords de case (MurNord = +X, MurOuest = −Z), familles (plein, vitrine, fenêtres, portes…) × matières (brique, clin, crépi, enduit, pierre) ; plafonds au sommet des murs (16,5 × 1,5). Un mur coupe les couloirs des voitures et les chemins des piétons." },
+      { id: "decor", n: "Décor & stockage", d: "Barrières, plantes, cartons (petit/moyen/grand, pile), rayonnages (vide/plein). Les meubles de stockage ajoutent du volume d'inventaire (Stockage).", l: ["stock"] },
+    ]},
+    { id: "terrainplot", n: "Terrain du plot", d: "Trois états : herbe en relief (Grass) sur les cases libres, herbe RASE (LeafyGrass) sur une bande de 5 studs autour de chaque sol, Ground sous les sols et les tabliers. Refait case par case à chaque pose (TerrainCase). Bords du plot : débord de 4 studs sous le trottoir.", l: ["herbemap"] },
+  ]},
+  { id: "donnees", n: "Données & économie", cote: "d", d: "Tout ce qui est sauvegardé et ce qui fait gagner ou dépenser de l'argent : profil du joueur, catalogue, stock, équipe, gains.", c: [
+    { id: "profil", n: "Profil (PlayerData)", d: "Sauvegarde ProfileService : Money, Xp, Grid, Annexe, Stations, Caisses, Inventory, Livraisons, Extensions, Acces, Cinematiques, Cree (jour). Attributs du joueur lus par l'interface : Money, XP, Rank, XPNext, Day, Alerte.", l: ["hud", "grille"], c: [
+      { id: "rang", n: "Rang & XP", d: "Catalogue Rank : paliers d'XP → rang (Bronze…) et probabilités de tirage des raretés de voitures (PlayerData.GetRank).", l: ["spawn"] },
+    ]},
+    { id: "catalogue", n: "Catalogue (ReplicatedStorage)", d: "Furniture (stations, caisses, décor, stockage : prix, masque, type, capacité, automatique), Consommable (items : prix d'achat/vente, volume), Extension, Car (raretés, modèles, multiplicateurs, longueurs réelles), Rank, Sol / Mur / Plafond (générés depuis le pack).", l: ["stations", "voitures"] },
+    { id: "stock", n: "Stock & logistique", d: "StoreManager : achat de consommables (volume max 600 L + meubles de stockage), remplissage d'une station (FillStation, capacité, un seul item par station). Onglets Stock et Supply.", l: ["decor", "livraison", "attentestock"], c: [
+      { id: "livraison", n: "Livraison (van)", d: "Chaque achat part en van depuis le tunnel : voie de GAUCHE, branche puis route du tour, rond-point coupé au plus court (dérapage), coupure du trottoir, cour du garage, cartons déchargés (CamionCartons). Caméra cinématique côté client (ClientLivraison), klaxon.", l: ["garages", "rondpoints", "tween"] },
+    ]},
+    { id: "equipe", n: "Équipe (WorkerManager)", d: "Embauche, affectation à une station ou une caisse, licenciement ; le logisticien a son poste au garage. Une station / caisse automatique a Worker = \"Automatic\" : pas d'employé nécessaire.", l: ["attentestock", "caisses"] },
+    { id: "gains", n: "Gains", d: "À la fin du service : Buy + (Sell − Buy) × Mult rareté × Mult station × bonus mutation (or ×3, argent ×2, électrique ×1,5) ; XP = 50 × Mult rareté ; la voiture entre dans l'Index du joueur (AddCar).", l: ["mutations", "index"] },
+  ]},
+  { id: "voitures", n: "Voitures & circulation", cote: "g", d: "Le cœur du jeu : des voitures clientes arrivent, font la queue, entrent, se font servir, payent et repartent, le tout animé côté client.", c: [
+    { id: "spawn", n: "Apparition & file", d: "CarManager.Start : une voiture toutes les 14–24 s par joueur, modèle tiré selon le rang (12 modèles de VoituresModeles, M4 = 22 studs). File sur la branche : nœud 1 devant l'entrée, 2 couloir, 3.. places d'attente jusqu'au tunnel. Voitures achetées au centre : prioritaires, attendent sur la route du tour (AttenteAchat).", l: ["rang", "entree", "achatcentre"], c: [
+      { id: "file", n: "QueueNodes", d: "Créés par Acces sur la voie de la branche, tous les 30 studs depuis l'entrée. Position p dans la file → nœud p + 2.", l: ["acces"] },
+    ]},
+    { id: "cyclevie", n: "Cycle de vie (états)", d: "Règle v51 (Thomas) : la voiture est bloquée ÉTAPE PAR ÉTAPE, rien n'est calculé d'avance. CAR_QUEUE → FIND_STATION → WAITING_SERVICE → FIND_CAISSE → QUEUE_CAISSE → COMPLETED → WAIT_EXIT → EXIT ; PASSE si aucune station avec employé n'est desservie.", l: ["acces", "couloirs"], c: [
+      { id: "entreeplot", n: "Entrer", d: "Il faut une station avec un employé (ou automatique) ET un couloir de goudron de 2 cases de l'entrée du plot jusqu'à l'entrée de la station. Le stock n'est pas exigé.", l: ["couloirs", "equipe"] },
+      { id: "attentestock", n: "Attendre dans la station", d: "Sans stock (ou sans employé) la voiture attend garée dans la station ; le joueur est prévenu (Alerte). Le service démarre dès qu'il y a du stock : la station s'anime (cycle), le client descend.", l: ["stock", "equipe"] },
+      { id: "payer", n: "Payer à la caisse", d: "Le client cherche une caisse accessible à pied (1 case de large) ; sans caisse ou sans employé à la caisse, il ATTEND (plus de départ sans payer). Caisse automatique : paye tout de suite.", l: ["pnj", "caisses"] },
+      { id: "repartir", n: "Repartir", d: "La voiture ne repart que s'il y a un couloir de goudron de la sortie de la station jusqu'à la SORTIE du plot ; sinon elle attend dans la station (Alerte). Puis ExitNodes → route du tour → fin de map.", l: ["sortie", "couloirs"] },
+    ]},
+    { id: "couloirs", n: "Couloirs de goudron (Circulation)", d: "La voiture est un bloc 2×2 cases ; un bloc est libre si ses 4 cases sont en goudron / route / béton, sans meuble ni mur. Recherche de chemin en largeur (BFS), simplifiée en points de virage avec vitesses (11 en ligne droite, 6,5 en virage, 5 pour se garer). Points de station : place reculée / avancée de 25 studs.", l: ["grille", "sols", "acces"] },
+    { id: "pnj", n: "Piétons (PNJ)", d: "Le client descend à la portière, marche jusqu'à la caisse (CheminPieton, 1 case, évite meubles et murs), fait la queue (4 places), paye, revient à sa voiture et remonte. Tenues aléatoires (chemises, pantalons, peaux).", l: ["payer", "tween"] },
+    { id: "tween", n: "Animation client (TWEENController)", d: "MoveCarEvent / MovePnjEvent : le serveur envoie cible + durée + état, le client fait la courbe de Bézier. États : 0 départ, 1 en marche, 2 arrivée, 3 départ+arrivée, 4 dérapage (lacet 28° + roulis + fumée). Moteur et bruits.", l: ["livraison", "pnj"] },
+    { id: "ambiance", n: "Voitures d'ambiance (CarAmbiance)", d: "Sortent des 4 usines, 4 tours de l'anneau central, avenue, rond-point extérieur, route du tour, diagonale. Trajets cuits dans RoutesAmbiance (gen_map_v21). Au plus une voiture par usine toutes les 30 s.", l: ["usines", "avenues", "rondpoints"], c: [
+      { id: "achatcentre", n: "Achat au centre", d: "ProximityPrompt sur la voiture d'ambiance : le joueur l'achète (prix = base × Mult rareté), elle quitte l'anneau à la prochaine sortie, suit Routes.Achat.PlotN jusqu'à la place d'attente de son plot et devient une cliente prioritaire.", l: ["routetour", "spawn"] },
+    ]},
+    { id: "mutations", n: "Mutations", d: "Au hasard toutes les 240–540 s ou par commande : Foudre (électrique, paie ×1,5, éclair FoudreServeur/FoudreClient), Or (×3) et Argent (×2) (MetalServeur/MetalClient).", l: ["gains", "admin"] },
+    { id: "cinematiques", n: "Cinématiques", d: "ClientCinematique : première GT3 d'un joueur (data.Cinematiques) → noir, « clac » les phares s'allument, l'espace, roues et moteur qui montent, caméra qui tourne et se met dans le dos, traînées d'hyperespace, flash, puis la map depuis le même angle derrière la vraie voiture (attente serveur 9,9 s). /cinematique GT3 la rejoue. Camion : ClientLivraison.", l: ["sons", "voitures", "admin"] },
+  ]},
+  { id: "stations", n: "Stations", cote: "g", d: "Les meubles 3×3 qui servent les voitures (modèles ×1,5 : 45 studs), avec leurs animations et leurs données de points (PARC, entrée, sortie) mises à l'échelle (Outils.repere).", l: ["catalogue"], c: [
+    { id: "lavage", n: "Lavage", d: "L1 place libre, L2 lavage aux seaux, L3 Kärcher, L4 portique à rouleaux (automatique). Consommables acceptés 1, 2, 3 ; capacités 50–300.", l: ["entreeplot"] },
+    { id: "atelier", n: "Atelier / électrique", d: "E4 bornes de recharge, E5 pneus, E6 peinture, E7 teinte de vitres (automatiques). Chaque station a ses propres animations (StationsClient)." },
+    { id: "caisses", n: "Caisses", d: "Caisse tapis (employé requis, file de 4) et caisse automatique. Le PNJ se place devant selon l'orientation ; paiement quand il est en tête et qu'il y a un employé.", l: ["payer", "equipe"] },
+    { id: "mecanique", n: "Mécanique (ReplicatedStorage.Stations)", d: "Outils (repère + échelle), Voiture (sens de marche d'après les roues), Montage, Client, Reglages, Donnees (points des stations), Comportements (Chaine). Les cycles lancerCycle / finirCycle animent la station chez tous les joueurs.", l: ["chaine"] },
+    { id: "chaine", n: "Chaîne de production (M4)", d: "Donnees_ChaineProduction : positions des robots et joints (M4_9 : 68 joints montés, joints définitifs attendus). Les voitures d'ambiance naissent au bout de la chaîne.", l: ["usines", "avenir"] },
+  ]},
+  { id: "interface", n: "Interface & client", cote: "g", d: "Tout ce que le joueur voit et manipule : écran-titre, choix du plot, onglets du bas, HUD, caméra libre, sons.", c: [
+    { id: "titre", n: "Écran-titre & choix du plot", d: "« Ta partie » (aperçu 3D du garage sauvegardé, construit à Y −700 par PlotManager.Apercu), « Continuer », puis « Choisis ton emplacement » (caméra de chaque PlotSpawn), chargement du garage.", l: ["plotspawns"] },
+    { id: "onglets", n: "Onglets du bas", d: "Build (cartes par catégorie : sols, murs, plafonds, décor, stations, caisses ; Déplacer, Supprimer, Tourner, Placer, extensions), Stock (achats), Supply (remplir les stations), Staff (équipe), Index (voitures collectionnées).", l: ["construction", "stock", "equipe", "index"], c: [
+      { id: "index", n: "Index des voitures", d: "Les 12 modèles par rareté (Common → Divine), couleur et fond par rareté (Car.Couleur / Fond), débloqués quand un client a payé.", l: ["gains"] },
+    ]},
+    { id: "hud", n: "HUD & alertes", d: "Argent, rang / XP, jour ; les alertes serveur arrivent par l'attribut Alerte du joueur (toasts coupés en v49 : affichage discret). Chat TextChatService (commandes /).", l: ["profil", "admin"] },
+    { id: "cameralibre", n: "Caméra libre (ClientCamera)", d: "En mode construction : caméra au-dessus du plot, ZQSD / flèches, molette = hauteur, clic droit = rotation." },
+    { id: "sons", n: "Sons (Sounds)", d: "click, open/close, buy, engine (moteur), klaxon, schling, musique de fond, hyper / moteurGT3 / clac (à fournir pour la cinématique).", l: ["cinematiques"] },
+    { id: "clientdivers", n: "Autres scripts client", d: "ClientData (synchro du profil), ClientStaff (garage et caméra d'embauche), ClientSupply, ClientLivraison, StationsClient (animations), FoudreClient / MetalClient (mutations)." },
+  ]},
+  { id: "outils", n: "Outils & admin", cote: "g", d: "Ce qui sert à fabriquer et tester le jeu : commandes admin, pipeline de construction de la place, import Studio, et la liste de ce qui reste à faire.", c: [
+    { id: "admin", n: "Commandes admin (chat)", d: "Réservées à thamary4 : /money, /unlock, /give, /livrer, /animation camion, /cinematique GT3, /mutation foudre|or|argent|stop, et les commandes de test v51 : /goudron x0 z0 x1 z1, /poser <meuble> x z [o], /stock [qte], /acces entree|sortie <n>, /aide.", l: ["cinematiques", "mutations", "acces"] },
+    { id: "pipeline", n: "Pipeline de build", d: "Base place_base_v9 + sources .lua remplacées + modèles insérés (merger) → Station_Tycoon_vNN.rbxl. gen_map_v21 (PlotSpawns, RoutesAmbiance, cases interdites), gen_constructions (pack → catalogues), gen_foudre (modules). Vérification luau-analyze.", l: ["install"] },
+    { id: "studio", n: "Import Studio", d: "Import 3D des FBX (map, arbres, pack, voitures) connecté avec le compte de Thomas ; Studio traite les unités comme des studs et borne à 2048 (×1,28, 180°) : corrigé en Lua. La place reste privée ; Thomas publie lui-même." },
+    { id: "avenir", n: "À venir", d: "V21d : segments de trottoir cachables pour l'entrée/sortie (prompt pour l'IA map) ; joints définitifs de la chaîne M4_9 ; remise à zéro des sauvegardes (grille 10 → 15) ; sons GT3 ; cinématique dans l'esprit du « space edit » TikTok.", l: ["trottoirsegments", "chaine", "cinematiques"] },
+  ]},
+]};
+
+// ----------------------------------------------------------------------------------------------------------------------
+// carte
+// ----------------------------------------------------------------------------------------------------------------------
+const COULEURS = { map: "--f1", plot: "--f2", donnees: "--f3", voitures: "--f4", stations: "--f5", interface: "--f6", outils: "--f7" };
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const svg = d3.select("#carte");
+const gRoot = svg.append("g");
+const gCroises = gRoot.append("g");
+const gLiens = gRoot.append("g");
+const gNoeuds = gRoot.append("g");
+const racine = d3.hierarchy(DONNEES, d => d.c);
+let i = 0;
+racine.each(n => { n.uid = ++i; n.famille = n.depth === 0 ? null : (n.depth === 1 ? n.data.id : n.ancestors()[n.ancestors().length - 2].data.id); });
+const parId = new Map(); racine.each(n => parId.set(n.data.id, n));
+// état initial : familles visibles, le reste replié
+racine.children.forEach(f => { f._children = f.children; f.children = null; f._children.forEach(replierTout); });
+function replierTout(n) { if (n.children) { n._children = n.children; n.children = null; n._children.forEach(replierTout); } }
+function deplierTout(n) { if (n._children) { n.children = n._children; n._children = null; } (n.children || []).forEach(deplierTout); }
+function ouvrirJusqua(n) { let a = n.parent; while (a) { if (a._children) { a.children = a._children; a._children = null; } a = a.parent; } }
+
+const NX = 330, NY = 34;
+let liensVisibles = false, selection = null, filtre = "";
+const zoom = d3.zoom().scaleExtent([0.25, 2.5]).on("zoom", e => gRoot.attr("transform", e.transform));
+svg.call(zoom).on("dblclick.zoom", null);
+
+function largeurTexte(t, taille) { return Math.min(250, t.length * taille * 0.56); }
+function tailleDe(d) { return d.depth === 0 ? 17 : d.depth === 1 ? 14 : 12.5; }
+function largeurDe(d) { return largeurTexte(d.data.n, tailleDe(d)) + (d.depth === 0 ? 28 : 40); }
+
+function disposer() {
+  // deux arbres (droite / gauche) : on duplique la racine avec les familles de chaque côté
+  const droite = racine.children.filter(f => f.data.cote === "d"), gauche = racine.children.filter(f => f.data.cote === "g");
+  const tree = d3.tree().nodeSize([NY, NX]).separation((a, b) => (a.parent === b.parent ? 1 : 1.4));
+  const faux = cote => { const r = d3.hierarchy({ id: "faux" }); r.children = cote; cote.forEach(c => c.parent = r); return r; };
+  const rd = faux(droite), rg = faux(gauche);
+  tree(rd); tree(rg);
+  racine.x = 0; racine.y = 0; racine.cote = 0;
+  const marquer = (n, s) => { n.cote = s; n.w = largeurDe(n); n.y = s * (n.depth * NX * 0.9 + 70); (n.children || []).forEach(c => marquer(c, s)); };
+  racine.w = largeurDe(racine);
+  droite.forEach(f => { f.parent = racine; marquer(f, 1); });
+  gauche.forEach(f => { f.parent = racine; marquer(f, -1); });
+  // recentre chaque côté verticalement
+  const centrer = (fams) => { const xs = fams.flatMap(f => f.descendants().map(d => d.x)); const m = (d3.min(xs) + d3.max(xs)) / 2; fams.forEach(f => f.each(d => d.x -= m)); };
+  centrer(droite); centrer(gauche);
+  racine.depth = 0;
+}
+
+function chemin(s, t) {
+  // du bord du parent (côté enfant) au bord de l'enfant (côté parent)
+  const sy = s.depth === 0 ? t.cote * s.w / 2 : s.y + s.cote * s.w, ty = t.y, mx = (sy + ty) / 2;
+  return `M${sy},${s.x}C${mx},${s.x} ${mx},${t.x} ${ty},${t.x}`;
+}
+function cheminCroise(a, b) {
+  const dx = b.y - a.y, dy = b.x - a.x, k = Math.max(60, Math.hypot(dx, dy) * 0.35);
+  return `M${a.y},${a.x}C${a.y + (a.cote || 1) * k},${a.x} ${b.y + (b.cote || 1) * k},${b.x} ${b.y},${b.x}`;
+}
+function couleurDe(n) { return n.depth === 0 ? css("--accent") : css(COULEURS[n.famille] || "--f7"); }
+function correspond(n) { if (!filtre) return true; const t = (n.data.n + " " + (n.data.d || "")).toLowerCase(); return t.includes(filtre); }
+
+function dessiner() {
+  disposer();
+  const noeuds = racine.descendants();
+  const visibles = new Map(noeuds.map(n => [n.data.id, n]));
+  const estompage = !!filtre || !!selection;
+  const lie = new Set();
+  if (selection) { lie.add(selection.data.id); (selection.data.l || []).forEach(id => lie.add(id)); noeuds.forEach(n => (n.data.l || []).includes(selection.data.id) && lie.add(n.data.id)); selection.ancestors().forEach(a => lie.add(a.data.id)); selection.descendants().forEach(a => lie.add(a.data.id)); }
+  const met = n => filtre ? (correspond(n) || n.descendants().some(correspond)) : (selection ? lie.has(n.data.id) : true);
+
+  // liens parent → enfant
+  const liens = gLiens.selectAll("path.lien").data(noeuds.slice(1), d => d.uid);
+  liens.exit().remove();
+  liens.enter().append("path").attr("class", "lien").merge(liens)
+    .attr("d", d => chemin(d.parent, d))
+    .attr("stroke", d => couleurDe(d))
+    .classed("estompe", d => estompage && !met(d));
+
+  // liens croisés
+  const paires = [], vus = new Set();
+  noeuds.forEach(a => (a.data.l || []).forEach(id => {
+    const b = visibles.get(id); if (!b || b === a) return;
+    const cle = a.uid < b.uid ? a.uid + "-" + b.uid : b.uid + "-" + a.uid;
+    if (vus.has(cle)) return; vus.add(cle); paires.push(a.uid < b.uid ? [a, b] : [b, a]);
+  }));
+  const montrees = liensVisibles ? paires : paires.filter(d => selection && (d[0] === selection || d[1] === selection));
+  const croises = gCroises.selectAll("path.croise").data(montrees, d => d[0].uid + "-" + d[1].uid);
+  croises.exit().remove();
+  croises.enter().append("path").attr("class", "croise").merge(croises)
+    .attr("d", d => cheminCroise(d[0], d[1]))
+    .classed("fort", d => selection && (d[0] === selection || d[1] === selection))
+    .classed("estompe", d => estompage && !(selection && (d[0] === selection || d[1] === selection)) && !(filtre && (correspond(d[0]) || correspond(d[1]))));
+
+  // noeuds
+  const sel = gNoeuds.selectAll("g.noeud").data(noeuds, d => d.uid);
+  sel.exit().remove();
+  const ent = sel.enter().append("g").attr("class", "noeud")
+    .on("click", (e, d) => { e.stopPropagation(); basculer(d); });
+  ent.append("rect").attr("rx", 9).attr("ry", 9);
+  ent.append("text").attr("class", "nom").attr("dominant-baseline", "middle");
+  ent.append("text").attr("class", "plus").attr("dominant-baseline", "middle");
+  const tous = ent.merge(sel);
+  tous.attr("class", d => "noeud" + (d.depth === 0 ? " racine" : d.depth === 1 ? " famille" : "") + (estompage && !met(d) ? " estompe" : "") + (selection === d ? " cible" : ""))
+    .attr("transform", d => `translate(${d.y},${d.x})`);
+  tous.each(function (d) {
+    const g = d3.select(this);
+    const w = d.w || largeurDe(d), h = d.depth === 0 ? 40 : d.depth === 1 ? 32 : 26;
+    const aEnfants = !!(d.children || d._children);
+    const gauche = d.cote === -1;
+    const ancre = gauche ? -w : (d.depth === 0 ? -w / 2 : 0);
+    const c = couleurDe(d);
+    g.select("rect").attr("x", ancre).attr("y", -h / 2).attr("width", w).attr("height", h)
+      .attr("fill", d.depth <= 1 ? c : css("--paper")).attr("stroke", c);
+    const nom = g.select("text.nom").text(d.data.n);
+    const plus = g.select("text.plus").text(aEnfants ? (d.children ? "−" : "+" + (d._children ? d._children.length : "")) : "");
+    if (d.depth === 0) { nom.attr("x", 0).attr("text-anchor", "middle"); plus.text(""); }
+    else if (gauche) { nom.attr("x", -12).attr("text-anchor", "end"); plus.attr("x", -w + 10).attr("text-anchor", "start"); }
+    else { nom.attr("x", 10).attr("text-anchor", "start"); plus.attr("x", w - 10).attr("text-anchor", "end"); }
+  });
+}
+function basculer(d) {
+  if (d.children) { d._children = d.children; d.children = null; }
+  else if (d._children) { d.children = d._children; d._children = null; }
+  selection = d;
+  dessiner(); montrer(d);
+}
+function allerA(id) {
+  const n = parId.get(id); if (!n) return;
+  ouvrirJusqua(n); selection = n; filtre = ""; document.getElementById("recherche").value = "";
+  dessiner(); montrer(n); centrerSur(n);
+}
+function centrerSur(n) {
+  const { width, height } = svg.node().getBoundingClientRect();
+  const t = d3.zoomTransform(svg.node());
+  svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity.translate(width / 2 - n.y * t.k, height / 2 - n.x * t.k).scale(t.k));
+}
+function recentrer() {
+  const { width, height } = svg.node().getBoundingClientRect();
+  const ns = racine.descendants();
+  const x0 = d3.min(ns, n => n.x) - 40, x1 = d3.max(ns, n => n.x) + 40;
+  const y0 = d3.min(ns, n => n.cote === -1 ? n.y - n.w : (n.depth === 0 ? -n.w / 2 : n.y)) - 40;
+  const y1 = d3.max(ns, n => n.cote === -1 ? n.y : (n.depth === 0 ? n.w / 2 : n.y + n.w)) + 40;
+  const k = Math.max(0.25, Math.min(1.1, width / (y1 - y0), (height - 160) / (x1 - x0)));
+  svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity.translate(width / 2 - k * (y0 + y1) / 2, height / 2 + 20 - k * (x0 + x1) / 2).scale(k));
+}
+function montrer(n) {
+  const p = document.getElementById("panneau");
+  if (!n) { p.hidden = true; return; }
+  const fam = n.depth === 0 ? "Projet" : n.depth === 1 ? "Grande famille" : parId.get(n.famille).data.n;
+  const chem = n.ancestors().reverse().map(a => a.data.n).join(" › ");
+  const vers = (n.data.l || []).map(id => parId.get(id)).filter(Boolean);
+  const depuis = []; racine.each(m => { if (m !== n && (m.data.l || []).includes(n.data.id)) depuis.push(m); });
+  const puce = m => `<i style="background:${couleurDe(m)}"></i>`;
+  const item = m => `<li><button type="button" data-aller="${m.data.id}">${puce(m)}${m.data.n}<span>· ${m.depth === 1 ? "famille" : parId.get(m.famille).data.n}</span></button></li>`;
+  const enfants = (n.children || n._children || []);
+  p.innerHTML = `<button class="fermer" type="button" aria-label="Fermer">×</button>
+    <div class="fam">${fam}</div><h2>${n.data.n}</h2>
+    <div class="chemin">${chem}</div>
+    <p>${n.data.d || ""}</p>
+    ${enfants.length ? `<h3>Sous-familles (${enfants.length})</h3><ul>${enfants.map(item).join("")}</ul>` : ""}
+    ${vers.length ? `<h3>Lié à</h3><ul>${vers.map(item).join("")}</ul>` : ""}
+    ${depuis.length ? `<h3>Référencé par</h3><ul>${depuis.map(item).join("")}</ul>` : ""}`;
+  p.hidden = false;
+  p.querySelectorAll("[data-aller]").forEach(b => b.addEventListener("click", () => allerA(b.dataset.aller)));
+  p.querySelector(".fermer").addEventListener("click", () => { selection = null; dessiner(); montrer(null); });
+}
+// légende
+const leg = document.getElementById("legende");
+racine.children.forEach(f => {
+  const b = document.createElement("button"); b.type = "button";
+  b.innerHTML = `<i style="background:${css(COULEURS[f.data.id])}"></i>${f.data.n}`;
+  b.addEventListener("click", () => { if (!f.children) { f.children = f._children; f._children = null; } allerA(f.data.id); });
+  leg.appendChild(b);
+});
+document.getElementById("btn-tout").addEventListener("click", () => { deplierTout(racine); dessiner(); if (selection) montrer(selection); });
+document.getElementById("btn-replier").addEventListener("click", () => { racine.children.forEach(replierTout); selection = null; filtre = ""; document.getElementById("recherche").value = ""; dessiner(); montrer(null); recentrer(); });
+document.getElementById("btn-centrer").addEventListener("click", recentrer);
+document.getElementById("btn-liens").addEventListener("click", e => { liensVisibles = !liensVisibles; e.currentTarget.textContent = "Liens croisés : " + (liensVisibles ? "tous" : "du nœud choisi"); e.currentTarget.setAttribute("aria-pressed", liensVisibles); dessiner(); });
+document.getElementById("recherche").addEventListener("input", e => {
+  filtre = e.target.value.trim().toLowerCase();
+  if (filtre) { racine.each(n => { if (correspond(n)) ouvrirJusqua(n); }); }
+  dessiner();
+});
+svg.on("click", () => { selection = null; dessiner(); montrer(null); });
+window.addEventListener("resize", () => dessiner());
+// thème : les couleurs sont lues au rendu, on redessine si le thème change
+const mq = window.matchMedia("(prefers-color-scheme: dark)"); mq.addEventListener && mq.addEventListener("change", () => dessiner());
+new MutationObserver(() => dessiner()).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+dessiner(); recentrer();
+</script>

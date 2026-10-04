@@ -1,0 +1,426 @@
+--[[ ClientCinematique (LocalScript, StarterPlayerScripts) — v50 : cinematiques de DECOUVERTE d'une voiture.
+	La premiere fois qu'un joueur voit un modele a cinematique (CarManager.CINEMATIQUES : GT3 pour l'instant), le serveur
+	laisse la voiture dans le tunnel et envoie CinematiqueEvent("voiture", voiture, nom). Ici, sequence "HYPERESPACE" :
+	  1. coupe : la camera est devant la voiture, dans l'ESPACE (boite noire, etoiles) sur une route sombre ; titre
+	     "PORSCHE 911 GT3 — nouveau modele debloque" ; moteur qui monte ;
+	  2. la voiture accelere de plus en plus (bandes de la route qui defilent, roues qui tournent, etoiles qui s'etirent
+	     en traits comme un saut en hyperespace, flammes bleues a l'arriere), la camera tourne autour d'elle en reculant,
+	     champ de vision qui s'ouvre, tremblement ;
+	  3. flash blanc ;
+	  4. retour sur la VRAIE voiture a la sortie du tunnel, qui demarre sur la route (la camera la suit 3 s), puis la camera
+	     revient au personnage.
+	Tout est local au client (scene construite a 4 000 studs d'altitude, detruite a la fin) ; bouton "Passer" / Echap.
+	Sons : Sounds.engine (moteur), Sounds.hyper (facultatif : whoosh / boom, rbxassetid a coller dans Sounds).
+]]
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local SoundService = game:GetService("SoundService")
+local UserInputService = game:GetService("UserInputService")
+local Lighting = game:GetService("Lighting")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local joueur = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+local Event = ReplicatedStorage:WaitForChild("CinematiqueEvent", 30)
+if not Event then return end
+local Car = require(ReplicatedStorage:WaitForChild("Catalogue"):WaitForChild("Car"))
+
+local POLICE = Font.new("rbxasset://fonts/families/Nunito.json", Enum.FontWeight.ExtraBold)
+local DUREE_HYPER = 7.4            -- secondes dans l'espace (acceleration)
+local DUREE_FLASH = 0.8            -- montee du flash blanc
+local DUREE_TUNNEL = 3.0           -- retour sur la vraie voiture qui demarre
+local BASE = CFrame.new(0, 4000, 0) -- ou l'on construit la scene (loin de tout)
+local VITESSE_MAX = 1400           -- studs/s "virtuels" au maximum
+
+local TITRES = {
+	GT3 = { titre = "PORSCHE 911 GT3", sous = "NOUVEAU MODÈLE DÉBLOQUÉ  ·  LÉGENDAIRE" },
+}
+
+local function sons()
+	local ok, S = pcall(function()
+		return require(joueur:WaitForChild("PlayerGui"):WaitForChild("UIController", 10):WaitForChild("Sounds", 10))
+	end)
+	return ok and S or {}
+end
+
+local function estRoue(n)
+	n = string.lower(n)
+	return n:find("wheel") or n:find("roue") or n:find("pneu") or n:find("tire") or n:find("tyre")
+end
+
+local function genreRoue(n)
+	n = string.upper(n)
+	if n:find("FL") or n:find("FR") or n:find("AV") or n:find("FRONT") then return 1 end
+	if n:find("RL") or n:find("RR") or n:find("AR") or n:find("REAR") or n:find("BACK") then return -1 end
+	return 0
+end
+-- direction avant d'un modele d'apres ses roues (centre des roues avant - centre des roues arriere), nil si inconnue
+local function sensDeMarche(car)
+	local sAV, nAV, sAR, nAR = Vector3.zero, 0, Vector3.zero, 0
+	for _, p in ipairs(car:GetDescendants()) do
+		if p:IsA("BasePart") then
+			local cle = nil
+			local a = p.Parent
+			while a and a ~= car do
+				if a:IsA("Model") and estRoue(a.Name) then cle = a.Name end
+				a = a.Parent
+			end
+			if not cle and estRoue(p.Name) then cle = p.Name end
+			if cle then
+				local g = genreRoue(cle)
+				if g == 1 then sAV += p.Position; nAV += 1 elseif g == -1 then sAR += p.Position; nAR += 1 end
+			end
+		end
+	end
+	if nAV == 0 or nAR == 0 then return nil end
+	local d = sAV / nAV - sAR / nAR
+	d = Vector3.new(d.X, 0, d.Z)
+	if d.Magnitude < 0.5 then return nil end
+	return d.Unit
+end
+
+local function lisse(u) u = math.clamp(u, 0, 1); return u * u * (3 - 2 * u) end
+
+-- ======================================================================================================================
+-- interface : bandes noires, titre, flash, bouton Passer
+-- ======================================================================================================================
+local function interface(nom)
+	local gui = Instance.new("ScreenGui"); gui.Name = "CinematiqueVoiture"; gui.IgnoreGuiInset = true; gui.DisplayOrder = 130; gui.ResetOnSpawn = false
+	for _, h in ipairs({0, 1}) do
+		local b = Instance.new("Frame"); b.Name = h == 0 and "Haut" or "Bas"; b.BackgroundColor3 = Color3.new(0, 0, 0); b.BorderSizePixel = 0
+		b.AnchorPoint = Vector2.new(0, h); b.Position = UDim2.fromScale(0, h); b.Size = UDim2.new(1, 0, 0, 0); b.ZIndex = 5; b.Parent = gui
+		TweenService:Create(b, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Size = UDim2.new(1, 0, 0.12, 0)}):Play()
+	end
+	local noir = Instance.new("Frame"); noir.Name = "Noir"; noir.BackgroundColor3 = Color3.new(0, 0, 0); noir.BorderSizePixel = 0
+	noir.Size = UDim2.fromScale(1, 1); noir.BackgroundTransparency = 0; noir.ZIndex = 3; noir.Parent = gui
+	local flash = Instance.new("Frame"); flash.Name = "Flash"; flash.BackgroundColor3 = Color3.new(1, 1, 1); flash.BorderSizePixel = 0
+	flash.Size = UDim2.fromScale(1, 1); flash.BackgroundTransparency = 1; flash.ZIndex = 10; flash.Parent = gui
+	local T = TITRES[nom] or { titre = string.upper(nom), sous = "NOUVEAU MODÈLE DÉBLOQUÉ" }
+	local tier = Car.TierDe(nom)
+	local couleur = (tier and Car[tier] and Car[tier].Couleur) or Color3.new(1, 1, 1)
+	local titre = Instance.new("TextLabel"); titre.Name = "Titre"; titre.BackgroundTransparency = 1; titre.AnchorPoint = Vector2.new(0.5, 1)
+	titre.Position = UDim2.new(0.5, 0, 0.86, 0); titre.Size = UDim2.new(0.9, 0, 0, 64); titre.TextColor3 = Color3.new(1, 1, 1)
+	titre.TextStrokeTransparency = 0.4; titre.FontFace = POLICE; titre.TextSize = 54; titre.Text = T.titre; titre.TextTransparency = 1; titre.ZIndex = 6; titre.Parent = gui
+	local sous = Instance.new("TextLabel"); sous.Name = "Sous"; sous.BackgroundTransparency = 1; sous.AnchorPoint = Vector2.new(0.5, 0)
+	sous.Position = UDim2.new(0.5, 0, 0.86, 2); sous.Size = UDim2.new(0.9, 0, 0, 26); sous.TextColor3 = couleur
+	sous.TextStrokeTransparency = 0.5; sous.FontFace = POLICE; sous.TextSize = 20; sous.Text = T.sous; sous.TextTransparency = 1; sous.ZIndex = 6; sous.Parent = gui
+	local passer = Instance.new("TextButton"); passer.Name = "Passer"; passer.AnchorPoint = Vector2.new(1, 0); passer.Position = UDim2.new(1, -18, 0.12, 10)
+	passer.Size = UDim2.fromOffset(120, 34); passer.BackgroundColor3 = Color3.new(0, 0, 0); passer.BackgroundTransparency = 0.45; passer.BorderSizePixel = 0
+	passer.Text = "Passer  ▸"; passer.TextColor3 = Color3.new(1, 1, 1); passer.FontFace = POLICE; passer.TextSize = 18; passer.AutoButtonColor = true; passer.ZIndex = 12; passer.Parent = gui
+	Instance.new("UICorner", passer).CornerRadius = UDim.new(0, 10)
+	gui.Parent = joueur:WaitForChild("PlayerGui")
+	return gui
+end
+
+-- ======================================================================================================================
+-- scene : espace + route + copie de la voiture
+-- ======================================================================================================================
+local function part(parent, nom, taille, cf, couleur, materiau, transparence)
+	local p = Instance.new("Part"); p.Name = nom; p.Size = taille; p.CFrame = cf
+	p.Color = couleur or Color3.new(0, 0, 0); p.Material = materiau or Enum.Material.SmoothPlastic; p.Transparency = transparence or 0
+	p.Anchored = true; p.CanCollide = false; p.CanQuery = false; p.CanTouch = false; p.CastShadow = false
+	p.TopSurface = Enum.SurfaceType.Smooth; p.BottomSurface = Enum.SurfaceType.Smooth; p.Parent = parent
+	return p
+end
+
+local function scene(carSource, nom)
+	local S = { dossier = Instance.new("Folder") }
+	S.dossier.Name = "CinematiqueScene"; S.dossier.Parent = workspace
+	local D = 260                                        -- demi-cote de la boite noire
+	local noir = Color3.fromRGB(2, 2, 6)
+	-- 6 murs (leurs faces exterieures regardent la camera, qui est a l'interieur)
+	for _, m in ipairs({{Vector3.new(0, D, 0), Vector3.new(2 * D, 1, 2 * D)}, {Vector3.new(0, -D, 0), Vector3.new(2 * D, 1, 2 * D)},
+		{Vector3.new(D, 0, 0), Vector3.new(1, 2 * D, 2 * D)}, {Vector3.new(-D, 0, 0), Vector3.new(1, 2 * D, 2 * D)},
+		{Vector3.new(0, 0, D), Vector3.new(2 * D, 2 * D, 1)}, {Vector3.new(0, 0, -D), Vector3.new(2 * D, 2 * D, 1)}}) do
+		part(S.dossier, "Espace", m[2], BASE * CFrame.new(m[1]), noir)
+	end
+	-- etoiles fixes : volume rempli de points lumineux
+	local volume = part(S.dossier, "Etoiles", Vector3.new(2 * D - 10, 2 * D - 10, 2 * D - 10), BASE, noir, nil, 1)
+	local etoiles = Instance.new("ParticleEmitter")
+	etoiles.Shape = Enum.ParticleEmitterShape.Box; etoiles.ShapeStyle = Enum.ParticleEmitterShapeStyle.Volume
+	etoiles.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+	etoiles.Color = ColorSequence.new(Color3.fromRGB(230, 236, 255)); etoiles.LightEmission = 1
+	etoiles.Size = NumberSequence.new(0.9); etoiles.Lifetime = NumberRange.new(60, 60); etoiles.Speed = NumberRange.new(0, 0)
+	etoiles.Rate = 500; etoiles.Transparency = NumberSequence.new(0.15); etoiles.Parent = volume
+	task.delay(1.6, function() etoiles.Rate = 0 end)
+	S.etoiles = etoiles
+	-- traits d'hyperespace : emis loin devant, ils foncent vers la voiture (et la camera)
+	S.traits = {}
+	for _, dx in ipairs({-60, 0, 60}) do
+		local src = part(S.dossier, "SourceTraits", Vector3.new(140, 90, 1), BASE * CFrame.new(dx, 18, -D + 20), noir, nil, 1)
+		local e = Instance.new("ParticleEmitter")
+		e.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+		e.Color = ColorSequence.new({ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)), ColorSequenceKeypoint.new(1, Color3.fromRGB(120, 170, 255))})
+		e.LightEmission = 1; e.Orientation = Enum.ParticleOrientation.VelocityParallel
+		e.Size = NumberSequence.new(0.4); e.Lifetime = NumberRange.new(1.2, 1.8); e.Speed = NumberRange.new(60, 80)
+		e.EmissionDirection = Enum.NormalId.Back   -- -Z local du Part = vers +Z monde ? non : Back = +Z du Part ; le Part regarde -Z (BASE), Back = vers la voiture
+		e.Rate = 0; e.Squash = NumberSequence.new(0); e.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.2), NumberSequenceKeypoint.new(1, 1)})
+		e.Parent = src
+		table.insert(S.traits, e)
+	end
+	-- route sombre : la voiture est a l'origine locale, regarde -Z ; la route s'etend devant
+	part(S.dossier, "Route", Vector3.new(46, 1, 2 * D - 4), BASE * CFrame.new(0, -0.5, 0), Color3.fromRGB(28, 29, 34), Enum.Material.Asphalt)
+	part(S.dossier, "Rive1", Vector3.new(0.8, 1.02, 2 * D - 4), BASE * CFrame.new(-22, -0.5, 0), Color3.fromRGB(200, 200, 205), Enum.Material.SmoothPlastic)
+	part(S.dossier, "Rive2", Vector3.new(0.8, 1.02, 2 * D - 4), BASE * CFrame.new(22, -0.5, 0), Color3.fromRGB(200, 200, 205), Enum.Material.SmoothPlastic)
+	S.bandes = {}
+	S.PAS = 24
+	for k = 0, 21 do
+		local b = part(S.dossier, "Bande", Vector3.new(0.7, 0.08, 9), BASE * CFrame.new(0, 0.05, 40 - k * S.PAS), Color3.fromRGB(255, 255, 255), Enum.Material.Neon)
+		table.insert(S.bandes, b)
+	end
+	-- la voiture : copie de la vraie (regarde -Z, posee sur la route)
+	local ok, copie = pcall(function()
+		carSource.Archivable = true
+		local c = carSource:Clone()
+		return c
+	end)
+	if ok and copie then
+		for _, d in ipairs(copie:GetDescendants()) do
+			if d:IsA("BasePart") then d.Anchored = true; d.CanCollide = false; d.CanQuery = false; d.CanTouch = false
+			elseif d:IsA("Sound") or d:IsA("Script") or d:IsA("LocalScript") then d:Destroy() end
+		end
+		-- taille en jeu (le modele partage de VoituresModeles a deja la longueur reelle ; la vraie voiture aussi)
+		local voulu = Car.Longueur and Car.Longueur(nom)
+		local ext = copie:GetExtentsSize()
+		local L = math.max(ext.X, ext.Z)
+		if voulu and L > 0 and math.abs(L - voulu) > 0.3 then pcall(function() copie:ScaleTo(copie:GetScale() * voulu / L) end) end
+		local root = copie:FindFirstChild("Root") or copie.PrimaryPart
+		local centre, taille = copie:GetBoundingBox()
+		-- repere "Root" de la copie : bas de la caisse, regarde l'avant. La vraie voiture en a un (SpawnCar) ; le modele
+		-- partage non : on le deduit des roues (avant - arriere), sinon de l'axe horizontal le plus long.
+		local rootCF
+		if root then
+			rootCF = root.CFrame
+		else
+			local avant = sensDeMarche(copie) or ((taille.X > taille.Z) and centre.RightVector or centre.LookVector)
+			avant = Vector3.new(avant.X, 0, avant.Z)
+			if avant.Magnitude < 1e-3 then avant = Vector3.new(0, 0, -1) end
+			local bas = centre.Position - Vector3.new(0, taille.Y / 2, 0)
+			rootCF = CFrame.lookAt(bas, bas + avant.Unit)
+		end
+		copie:PivotTo(CFrame.lookAt(BASE.Position, BASE.Position + Vector3.new(0, 0, -1)) * (rootCF:Inverse() * copie:GetPivot()))
+		copie.Parent = S.dossier
+		S.voiture = copie; S.root = root; S.taille = taille
+		-- roues (pieces nommees roue/wheel) : on les fait tourner nous-memes
+		S.roues = {}
+		local ref = copie:GetPivot()
+		for _, d in ipairs(copie:GetDescendants()) do
+			if d:IsA("BasePart") then
+				local nomRoue = nil
+				local a = d
+				while a and a ~= copie do if (a:IsA("Model") or a:IsA("BasePart")) and estRoue(a.Name) then nomRoue = a.Name end a = a.Parent end
+				if nomRoue then
+					local groupe = nil
+					for _, g in ipairs(S.roues) do if g.nom == nomRoue then groupe = g end end
+					if not groupe then groupe = {nom = nomRoue, pieces = {}, somme = Vector3.zero, n = 0, rayon = 1}; table.insert(S.roues, groupe) end
+					table.insert(groupe.pieces, {part = d, offset = ref:ToObjectSpace(d.CFrame)})
+					groupe.somme += ref:PointToObjectSpace(d.Position); groupe.n += 1
+					groupe.rayon = math.max(groupe.rayon, math.max(d.Size.X, d.Size.Y, d.Size.Z) / 2)
+				end
+			end
+		end
+		for _, g in ipairs(S.roues) do g.centre = g.somme / g.n end
+		S.refVoiture = ref
+		-- lumieres : phares + eclairage de la voiture (l'espace est noir)
+		local avant = ref * CFrame.new(0, 2.2, -taille.Z / 2 + 0.5)
+		for _, x in ipairs({-taille.X / 2 + 1.2, taille.X / 2 - 1.2}) do
+			local ph = part(S.dossier, "Phare", Vector3.new(0.5, 0.5, 0.5), avant * CFrame.new(x, 0, 0), Color3.new(1, 1, 1), Enum.Material.Neon)
+			local sl = Instance.new("SpotLight"); sl.Angle = 70; sl.Range = 120; sl.Brightness = 6; sl.Color = Color3.fromRGB(255, 250, 230); sl.Face = Enum.NormalId.Front; sl.Parent = ph
+		end
+		local lampe = part(S.dossier, "Lampe", Vector3.new(1, 1, 1), ref * CFrame.new(0, 14, 2), Color3.new(0, 0, 0), nil, 1)
+		local pl = Instance.new("PointLight"); pl.Range = 60; pl.Brightness = 2.2; pl.Color = Color3.fromRGB(200, 215, 255); pl.Parent = lampe
+		-- flammes bleues a l'arriere (boost) : rate monte avec la vitesse
+		S.boost = {}
+		for _, x in ipairs({-1.6, 1.6}) do
+			local ech = part(S.dossier, "Echappement", Vector3.new(0.4, 0.4, 0.4), ref * CFrame.new(x, 1.0, taille.Z / 2 + 0.2), Color3.new(0, 0, 0), nil, 1)
+			local e = Instance.new("ParticleEmitter")
+			e.Texture = "rbxasset://textures/particles/fire_main.dds"
+			e.Color = ColorSequence.new({ColorSequenceKeypoint.new(0, Color3.fromRGB(120, 190, 255)), ColorSequenceKeypoint.new(1, Color3.fromRGB(40, 60, 255))})
+			e.LightEmission = 1; e.Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 1.2), NumberSequenceKeypoint.new(1, 0.2)})
+			e.Lifetime = NumberRange.new(0.15, 0.3); e.Speed = NumberRange.new(40, 70); e.Rate = 0; e.EmissionDirection = Enum.NormalId.Back
+			e.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.2), NumberSequenceKeypoint.new(1, 1)}); e.Parent = ech
+			table.insert(S.boost, e)
+		end
+	end
+	return S
+end
+
+-- ======================================================================================================================
+-- la sequence
+-- ======================================================================================================================
+local enCours = false
+
+-- voiture : la vraie voiture si elle est deja repliquee (sinon nil : on la retrouve pendant la scene via carID/dossierNom) ;
+-- la scene "espace" est construite a partir du modele partage (VoituresModeles) : elle ne depend pas de la replication.
+local function cinematique(voiture, nom, carID, dossierNom, position)
+	if enCours then return end
+	local modele = Car.Modele and Car.Modele(Car.TierDe and Car.TierDe(nom), nom)
+	if typeof(voiture) ~= "Instance" then voiture = nil end
+	local source = voiture or modele
+	if not source then warn("[Cinematique] aucun modele pour " .. tostring(nom)); return end
+	enCours = true
+	local root = voiture and (voiture:FindFirstChild("Root") or voiture.PrimaryPart)
+	-- en tache de fond : retrouver la vraie voiture (zone de streaming, replication en retard) pour le plan final
+	task.spawn(function()
+		if typeof(position) == "Vector3" then pcall(function() joueur:RequestStreamAroundAsync(position, 3) end) end
+		local limite = os.clock() + DUREE_HYPER + 2
+		while not voiture and os.clock() < limite do
+			local dossier = dossierNom and dossierNom ~= "" and workspace:FindFirstChild(dossierNom)
+			local v = dossier and carID and dossier:FindFirstChild(carID)
+			if v then voiture = v else task.wait(0.2) end
+		end
+		while voiture and not root and os.clock() < limite do
+			root = voiture:FindFirstChild("Root") or voiture.PrimaryPart
+			if not root then task.wait(0.1) end
+		end
+	end)
+
+	local gui = interface(nom)
+	local pg = joueur:FindFirstChild("PlayerGui")
+	local main = pg and pg:FindFirstChild("Main")
+	local mainEtait = main and main.Enabled
+	if main then main.Enabled = false end
+	local typeAvant = camera.CameraType
+	local fovAvant = camera.FieldOfView
+	camera.CameraType = Enum.CameraType.Scriptable
+	local atmo = Lighting:FindFirstChildOfClass("Atmosphere")
+	local densiteAvant = atmo and atmo.Density
+	if atmo then atmo.Density = 0.01 end                 -- pas de brume dans l'espace
+
+	local S = scene(source, nom)
+	local fini = false
+	local function finir(raison) if not fini then fini = true; print("[Cinematique] fin : " .. raison) end end
+	gui.Passer.Activated:Connect(function() finir("bouton Passer") end)
+	local touche = UserInputService.InputBegan:Connect(function(i, gp) if not gp and i.KeyCode == Enum.KeyCode.Escape then finir("Echap") end end)
+
+	-- sons
+	local Sons = sons()
+	local moteur
+	if Sons.engine and Sons.engine.id and Sons.engine.id ~= "" then
+		moteur = Instance.new("Sound"); moteur.SoundId = Sons.engine.id; moteur.Looped = true; moteur.Volume = 0; moteur.PlaybackSpeed = 0.7; moteur.Parent = SoundService; moteur:Play()
+	end
+	local hyper
+	if Sons.hyper and Sons.hyper.id and Sons.hyper.id ~= "" then
+		hyper = Instance.new("Sound"); hyper.SoundId = Sons.hyper.id; hyper.Volume = Sons.hyper.volume or 0.8; hyper.Parent = SoundService
+	end
+	if Sons.schling and Sons.schling.id and Sons.schling.id ~= "" then
+		task.delay(0.9, function() local s = Instance.new("Sound"); s.SoundId = Sons.schling.id; s.Volume = Sons.schling.volume or 0.6; s.Parent = SoundService; s:Play(); task.delay(3, function() s:Destroy() end) end)
+	end
+
+	-- entree : fondu du noir, titre
+	TweenService:Create(gui.Noir, TweenInfo.new(0.8), {BackgroundTransparency = 1}):Play()
+	task.delay(0.9, function()
+		TweenService:Create(gui.Titre, TweenInfo.new(0.6), {TextTransparency = 0}):Play()
+		TweenService:Create(gui.Sous, TweenInfo.new(0.6), {TextTransparency = 0}):Play()
+	end)
+	task.delay(DUREE_HYPER - 1.2, function()
+		TweenService:Create(gui.Titre, TweenInfo.new(0.5), {TextTransparency = 1}):Play()
+		TweenService:Create(gui.Sous, TweenInfo.new(0.5), {TextTransparency = 1}):Play()
+	end)
+
+	local depart = os.clock()
+	local angleRoues = 0
+	local phase = "hyper"
+	local flashLance = false
+	local cfLisse = nil
+	local function lisser(cible, dt, k)
+		if not cfLisse then cfLisse = cible return cible end
+		cfLisse = cfLisse:Lerp(cible, math.min(1, dt * (k or 4)))
+		return cfLisse
+	end
+	local rng = Random.new()
+	local conn
+	local function etape(dt)
+		if fini then return end
+		local t = os.clock() - depart
+		if phase == "hyper" then
+			local u = math.clamp(t / DUREE_HYPER, 0, 1)
+			local acc = lisse(u) ^ 1.6
+			local v = 30 + (VITESSE_MAX - 30) * acc
+			-- route qui defile
+			for _, b in ipairs(S.bandes) do
+				local cf = b.CFrame + Vector3.new(0, 0, v * dt)
+				local lz = (BASE:Inverse() * cf).Position.Z
+				if lz > 50 then cf = cf - Vector3.new(0, 0, #S.bandes * S.PAS) end
+				b.CFrame = cf
+			end
+			-- roues
+			if S.roues and S.refVoiture then
+				angleRoues -= v * dt / (S.roues[1] and S.roues[1].rayon or 1)
+				if angleRoues < -2 * math.pi then angleRoues += 2 * math.pi end
+				local trem = Vector3.new(rng:NextNumber(-1, 1), rng:NextNumber(-1, 1), 0) * 0.03 * acc
+				local refV = S.refVoiture + trem
+				for _, g in ipairs(S.roues) do
+					local rot = CFrame.new(g.centre) * CFrame.Angles(angleRoues, 0, 0) * CFrame.new(-g.centre)
+					for _, e in ipairs(g.pieces) do if e.part.Parent then e.part.CFrame = refV * rot * e.offset end end
+				end
+			end
+			-- traits d'hyperespace et flammes
+			for _, e in ipairs(S.traits) do
+				e.Rate = math.clamp((v - 120) / 2.5, 0, 420)
+				e.Speed = NumberRange.new(v * 0.9, v * 1.3)
+				e.Size = NumberSequence.new(0.35 + 0.6 * acc)
+			end
+			for _, e in ipairs(S.boost) do e.Rate = math.clamp((v - 200) / 4, 0, 260) end
+			if S.etoiles then S.etoiles.Transparency = NumberSequence.new(0.15 + 0.7 * acc) end
+			-- camera : devant la voiture, puis tourne autour en reculant ; FOV qui s'ouvre ; tremblement
+			local a = -0.25 + 2.9 * lisse(u)                              -- 0 = pile devant
+			local d = 13 + 11 * acc
+			local h = 1.8 + 3.2 * lisse(u)
+			local centre = BASE.Position + Vector3.new(0, 1.6, 0)
+			local pose = centre + Vector3.new(math.sin(a) * d, h, -math.cos(a) * d)
+			local trem = Vector3.new(rng:NextNumber(-1, 1), rng:NextNumber(-1, 1), rng:NextNumber(-1, 1)) * 0.35 * acc * acc
+			camera.CFrame = CFrame.lookAt(pose + trem, centre + Vector3.new(0, 0.4, -2) + trem * 0.3)
+			camera.FieldOfView = 68 + 44 * acc
+			if moteur then moteur.PlaybackSpeed = 0.7 + 1.9 * acc; moteur.Volume = 0.25 + 0.5 * acc end
+			if t >= DUREE_HYPER - DUREE_FLASH and not flashLance then
+				flashLance = true
+				if hyper then hyper:Play() end
+				TweenService:Create(gui.Flash, TweenInfo.new(DUREE_FLASH, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {BackgroundTransparency = 0}):Play()
+			end
+			if t >= DUREE_HYPER then
+				phase = "tunnel"; depart = os.clock(); cfLisse = nil
+				print(("[Cinematique] plan final : voiture %s, root %s"):format(tostring(voiture and voiture.Parent and voiture.Name), tostring(root and root.Parent and root.Name)))
+				S.dossier:Destroy(); S.dossier = nil
+				if atmo and densiteAvant then atmo.Density = densiteAvant end
+				camera.FieldOfView = 70
+				TweenService:Create(gui.Flash, TweenInfo.new(0.7), {BackgroundTransparency = 1}):Play()
+				if moteur then TweenService:Create(moteur, TweenInfo.new(1.5), {Volume = 0}):Play() end
+			end
+		elseif phase == "tunnel" then
+			if not (voiture and root and voiture.Parent and root.Parent) then finir("voiture disparue") return end
+			-- la vraie voiture, a la sortie du tunnel : camera au bord de la route, devant, elle vient vers nous
+			local cf = root.CFrame
+			local pose = (cf * CFrame.new(-9, 3.2, -24)).Position
+			camera.CFrame = lisser(CFrame.lookAt(pose, cf.Position + Vector3.new(0, 2.5, 0)), dt, 5)
+			if t >= DUREE_TUNNEL then finir("plan final termine") end
+		end
+	end
+	conn = RunService.RenderStepped:Connect(function(dt)
+		local ok, err = pcall(etape, dt)
+		if not ok then warn("[Cinematique] erreur : " .. tostring(err)); finir("erreur") end
+	end)
+	while not fini do task.wait(0.05) end
+	conn:Disconnect(); touche:Disconnect()
+	if S.dossier then S.dossier:Destroy() end
+	if atmo and densiteAvant then atmo.Density = densiteAvant end
+	if moteur then moteur:Destroy() end
+	if hyper then task.delay(3, function() hyper:Destroy() end) end
+	gui.Flash.BackgroundTransparency = 1
+	for _, b in ipairs({gui.Haut, gui.Bas}) do TweenService:Create(b, TweenInfo.new(0.35), {Size = UDim2.new(1, 0, 0, 0)}):Play() end
+	gui.Passer.Visible = false
+	task.delay(0.4, function() gui:Destroy() end)
+	camera.FieldOfView = fovAvant
+	camera.CameraType = typeAvant ~= Enum.CameraType.Scriptable and typeAvant or Enum.CameraType.Custom
+	local perso = joueur.Character
+	if perso then camera.CameraSubject = perso:FindFirstChildOfClass("Humanoid") end
+	if main and mainEtait then main.Enabled = true end
+	enCours = false
+end
+
+Event.OnClientEvent:Connect(function(quoi, voiture, nom, carID, dossierNom, position)
+	if quoi ~= "voiture" then return end
+	print(("[Cinematique] decouverte : %s (voiture %s)"):format(tostring(nom), typeof(voiture) == "Instance" and "repliquee" or "pas encore repliquee"))
+	task.spawn(cinematique, voiture, tostring(nom), carID, dossierNom, position)
+end)

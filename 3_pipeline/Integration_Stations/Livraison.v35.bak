@@ -1,0 +1,283 @@
+--[[ Livraison (ModuleScript, ServerScriptService) — le CAMION DE LIVRAISON du Stock.
+	Les livraisons partent par CYCLES D'UNE MINUTE, sur une horloge continue commune a tout le serveur (heure serveur :
+	le top tombe a chaque minute ronde, 0 s, 60 s, 120 s...). Quand un joueur commande des consommables (onglet Stock), il
+	paie tout de suite mais ne recoit rien : il attend le prochain top. S'il commande a 40 s dans le cycle, il recoit
+	20 s plus tard ; s'il ne commande rien, aucun camion ne vient.
+
+	Le camion : il part du spawner (le tunnel du plot) assez tot pour passer DEVANT le plot exactement au top ; au moment
+	ou il passe devant, tout ce qui a ete commande jusque-la (meme pendant qu'il roulait) tombe dans l'inventaire. Il
+	continue et ressort de l'autre cote (trajet de sortie), puis disparait. Pas d'arret, pas de file : c'est une livraison.
+
+	Regles :
+	  * une seule livraison par top, par joueur, avec tout ce qui est en attente ;
+	  * le volume de ce qui est en attente compte dans la place de stockage (pas de sur-commande) ;
+	  * ce qui est en attente est enregistre dans le profil (data.Livraisons) : si le joueur quitte avant le top, il
+	    est livre au premier top apres sa prochaine connexion. Rien n'est perdu, rien ne vient du client.
+
+	Modele : ReplicatedStorage/Camion (le camion de Thomas, Model, avant vers -Z / cote cabine). S'il n'y est pas, un
+	camion provisoire en briques (memes dimensions : 9 x 11 x 24 studs) est construit ici.
+	Client : Buyfunction repond (true, secondesAvantLivraison) ; le RemoteEvent LivraisonEvent annonce
+	("commande", eta) et ("livree", liste) au joueur.
+]]
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+local Players = game:GetService("Players")
+
+local PlayerData = require(ServerScriptService:WaitForChild("PlayerData"))
+local StoreManager = require(ServerScriptService:WaitForChild("StoreManager"))
+local CarManager = require(ServerScriptService:WaitForChild("CarManager"))
+local Catalogue = require(ReplicatedStorage:WaitForChild("Catalogue"))
+
+local CYCLE = 60                  -- secondes entre deux tops de livraison (horloge serveur continue, commune a tous)
+local LONGUEUR_CAMION = 24        -- studs (les voitures clientes font 16)
+local VITESSE = 28                -- studs/s : un peu moins vite que les voitures (32)
+local MAX_QUANTITE = 99
+
+local function maintenant() return workspace:GetServerTimeNow() end
+local function prochainTop(t) return math.ceil(t / CYCLE) * CYCLE end            -- premier top strictement apres t (ou = t)
+
+local Event = ReplicatedStorage:FindFirstChild("LivraisonEvent")
+if not Event then Event = Instance.new("RemoteEvent"); Event.Name = "LivraisonEvent"; Event.Parent = ReplicatedStorage end
+
+local Livraison = {}
+local Sessions = {}     -- [userId] = { SpawnFolder, Dossier, Camion = { modele, livre = bool, top = heure serveur de la livraison }, Depart = top dont le depart est passe }
+
+-- ======================================================================================================================
+-- CAMION PROVISOIRE (briques) : dimensions du camion.obj de Thomas, avant vers -Z
+-- ======================================================================================================================
+local function brique(parent, nom, taille, cf, couleur, materiau, transparence)
+	local p = Instance.new("Part")
+	p.Name = nom; p.Size = taille; p.CFrame = cf; p.Color = couleur
+	p.Material = materiau or Enum.Material.SmoothPlastic; p.Transparency = transparence or 0
+	p.TopSurface = Enum.SurfaceType.Smooth; p.BottomSurface = Enum.SurfaceType.Smooth
+	p.Anchored = true; p.CanCollide = false; p.CanQuery = false; p.CanTouch = false; p.CastShadow = true
+	p.Parent = parent
+	return p
+end
+
+local function camionProvisoire()
+	local m = Instance.new("Model"); m.Name = "Camion"
+	local GRIS_CLAIR = Color3.fromRGB(156, 156, 163)
+	local GRIS = Color3.fromRGB(107, 107, 107)
+	local NOIR = Color3.fromRGB(18, 18, 20)
+	local ARDOISE = Color3.fromRGB(90, 93, 107)
+	local VERRE = Color3.fromRGB(120, 160, 190)
+	-- repere : X lateral, Y sol = 0, Z longitudinal (avant = -Z) ; cotes releves sur camion.obj (sol a y = 0,886 retire)
+	brique(m, "Chassis", Vector3.new(8.3, 2.7, 19.4), CFrame.new(0, 1.4, 0.1), NOIR)
+	brique(m, "Caisse", Vector3.new(7.8, 7.7, 14.1), CFrame.new(0, 6.95, 4.7), GRIS_CLAIR)
+	brique(m, "Caisse_Bord", Vector3.new(8.0, 0.4, 14.3), CFrame.new(0, 10.6, 4.7), ARDOISE)
+	brique(m, "Portes_AR", Vector3.new(7.6, 7.4, 0.15), CFrame.new(0, 6.95, 11.8), GRIS)
+	brique(m, "Cabine", Vector3.new(7.7, 6.3, 9.4), CFrame.new(0, 5.75, -7.2), GRIS)
+	brique(m, "Toit_Cabine", Vector3.new(7.7, 1.2, 8.6), CFrame.new(0, 9.5, -7.4), GRIS)
+	brique(m, "ParBrise", Vector3.new(7.2, 3.0, 0.3), CFrame.new(0, 6.9, -11.75), VERRE, Enum.Material.Glass, 0.3)
+	brique(m, "Vitre_G", Vector3.new(0.3, 2.6, 3.4), CFrame.new(-3.85, 6.9, -9.0), VERRE, Enum.Material.Glass, 0.3)
+	brique(m, "Vitre_D", Vector3.new(0.3, 2.6, 3.4), CFrame.new(3.85, 6.9, -9.0), VERRE, Enum.Material.Glass, 0.3)
+	brique(m, "Calandre", Vector3.new(9.2, 1.2, 0.5), CFrame.new(0, 5.9, -11.85), NOIR, Enum.Material.Metal)
+	brique(m, "ParChoc", Vector3.new(6.8, 2.1, 1.3), CFrame.new(0, 2.7, -11.0), Color3.fromRGB(240, 240, 240))
+	brique(m, "Phare_G", Vector3.new(1.4, 0.8, 0.2), CFrame.new(-3.0, 4.6, -11.95), Color3.fromRGB(255, 250, 200), Enum.Material.Neon)
+	brique(m, "Phare_D", Vector3.new(1.4, 0.8, 0.2), CFrame.new(3.0, 4.6, -11.95), Color3.fromRGB(255, 250, 200), Enum.Material.Neon)
+	brique(m, "Feu_G", Vector3.new(1.0, 0.6, 0.2), CFrame.new(-3.2, 3.0, 11.95), Color3.fromRGB(255, 60, 40), Enum.Material.Neon)
+	brique(m, "Feu_D", Vector3.new(1.0, 0.6, 0.2), CFrame.new(3.2, 3.0, 11.95), Color3.fromRGB(255, 60, 40), Enum.Material.Neon)
+	-- roues (cylindres : l'axe d'un cylindre Roblox est X = l'axe lateral du camion) ; noms AV/AR pour le sens de marche
+	for _, r in ipairs({{"Roue_AVG", -3.4, -7.3}, {"Roue_AVD", 3.4, -7.3}, {"Roue_ARG", -3.4, 8.45}, {"Roue_ARD", 3.4, 8.45}}) do
+		local roue = brique(m, r[1], Vector3.new(1.6, 4.4, 4.4), CFrame.new(r[2], 2.2, r[3]), NOIR, Enum.Material.Rubber)
+		roue.Shape = Enum.PartType.Cylinder
+		local jante = brique(m, r[1] .. "_Jante", Vector3.new(1.7, 2.4, 2.4), CFrame.new(r[2], 2.2, r[3]), GRIS_CLAIR, Enum.Material.Metal)
+		jante.Shape = Enum.PartType.Cylinder
+	end
+	-- inscription sur les flancs de la caisse
+	for _, cote in ipairs({{Enum.NormalId.Left, -1}, {Enum.NormalId.Right, 1}}) do
+		local gui = Instance.new("SurfaceGui"); gui.Face = cote[1]; gui.CanvasSize = Vector2.new(1400, 770); gui.LightInfluence = 1
+		gui.Parent = m.Caisse
+		local t = Instance.new("TextLabel"); t.Size = UDim2.fromScale(1, 0.45); t.Position = UDim2.fromScale(0, 0.28)
+		t.BackgroundTransparency = 1; t.Text = "LIVRAISON"; t.TextScaled = true; t.TextColor3 = ARDOISE
+		t.FontFace = Font.new("rbxasset://fonts/families/Nunito.json", Enum.FontWeight.ExtraBold); t.Parent = gui
+	end
+	return m
+end
+
+local function modeleCamion()
+	local m = ReplicatedStorage:FindFirstChild("Camion")
+	if m and m:IsA("Model") and m:FindFirstChildWhichIsA("BasePart", true) then return m end
+	local prov = ReplicatedStorage:FindFirstChild("Camion_Provisoire")
+	if not prov then prov = camionProvisoire(); prov.Name = "Camion_Provisoire"; prov.Parent = ReplicatedStorage end
+	return prov
+end
+
+-- ======================================================================================================================
+-- COMMANDES
+-- ======================================================================================================================
+local function livraisonsDe(data)
+	if type(data.Livraisons) ~= "table" then data.Livraisons = {} end
+	return data.Livraisons
+end
+
+local function volumeEnRoute(data)
+	local total = 0
+	for _, l in ipairs(livraisonsDe(data)) do
+		local infos = Catalogue.GetInfo("Consommable", l.item)
+		if infos and infos.Volume then total += infos.Volume * l.qte end
+	end
+	return total
+end
+
+-- longueur du trajet du tunnel au point de livraison (pour annoncer le delai)
+local function etaDepuisTunnel(spawnFolder)
+	local pts = {}
+	local tunnel = spawnFolder:FindFirstChild("Tunnel")
+	if tunnel then table.insert(pts, tunnel:GetPivot().Position) end
+	local nodes = spawnFolder:FindFirstChild("QueueNodes")
+	if nodes then
+		for i = #nodes:GetChildren(), 1, -1 do
+			local n = nodes:FindFirstChild(tostring(i)); if n then table.insert(pts, n.Position) end
+		end
+	end
+	local exits = spawnFolder:FindFirstChild("ExitNodes")
+	local e2 = exits and exits:FindFirstChild("2")
+	if e2 and #pts > 0 then table.insert(pts, pts[#pts]:Lerp(e2.Position, 0.5)) end
+	local d = 0
+	for i = 2, #pts do d += (pts[i] - pts[i - 1]).Magnitude end
+	return d * 1.06 / VITESSE + 1.5
+end
+
+-- Achat cote Stock : paie tout de suite, la marchandise arrive par camion. Retourne (true, secondes) ou false.
+function Livraison.Commander(player, itemID, quantite)
+	if type(itemID) ~= "string" or type(quantite) ~= "number" or quantite ~= quantite then return false end
+	quantite = math.floor(quantite)
+	if quantite <= 0 or quantite > MAX_QUANTITE then return false end
+	local infos = Catalogue.GetInfo("Consommable", itemID)
+	if not infos or not infos.Buy or not infos.Volume then return false end
+	local data = PlayerData.GetData(player)
+	if not data then return false end
+
+	local prix = infos.Buy * quantite
+	if PlayerData.GetMoney(player) < prix then return false end
+	local volume = StoreManager.GetCurrentVolume(player) + volumeEnRoute(data) + infos.Volume * quantite
+	if volume > StoreManager.GetMaxVolume(player) then return false end
+
+	PlayerData.SpendMoney(player, prix)
+	local liste = livraisonsDe(data)
+	local trouve = false
+	for _, l in ipairs(liste) do if l.item == itemID then l.qte += quantite; trouve = true break end end
+	if not trouve then table.insert(liste, {item = itemID, qte = quantite}) end
+
+	local S = Sessions[player.UserId]
+	if not S then return true, 0 end                       -- pas encore de plot : livre au premier top apres le Start
+	return true, Livraison.Delai(S)
+end
+
+-- secondes avant la livraison de ce qui est en attente : le prochain top, sauf si le camion de ce top est deja parti
+-- sans nous (aucune commande au moment du depart) : alors le top suivant
+function Livraison.Delai(S)
+	local t = maintenant()
+	local top = prochainTop(t)
+	if S.Camion and not S.Camion.livre then return math.max(0.5, S.Camion.top - t) end   -- camion en route : il embarque tout
+	if S.Depart and S.Depart == top then top += CYCLE end                                 -- le depart de ce top est passe
+	return top - t
+end
+
+-- ======================================================================================================================
+-- LE CAMION
+-- ======================================================================================================================
+local function livrer(player, S)
+	local data = PlayerData.GetData(player)
+	if not data then return end
+	local liste = livraisonsDe(data)
+	local resume = {}
+	for _, l in ipairs(liste) do
+		PlayerData.AddItem(player, l.item, l.qte)
+		local infos = Catalogue.GetInfo("Consommable", l.item)
+		table.insert(resume, {item = l.item, nom = infos and infos.Name or l.item, qte = l.qte})
+	end
+	data.Livraisons = {}
+	Event:FireClient(player, "livree", resume)
+end
+
+-- fait partir le camion du tunnel pour qu'il passe devant le plot au top donne (heure serveur)
+function Livraison.Envoyer(player, top)
+	local S = Sessions[player.UserId]
+	if not S or not S.Dossier.Parent then return end
+	local sf = S.SpawnFolder
+	local tunnel, nodes, exits = sf:FindFirstChild("Tunnel"), sf:FindFirstChild("QueueNodes"), sf:FindFirstChild("ExitNodes")
+	if not (tunnel and nodes and exits) then return end
+
+	local camion = CarManager.SpawnCar(modeleCamion(), LONGUEUR_CAMION)
+	camion.Name = "Camion"
+	camion:SetAttribute("Camion", true)
+	camion:PivotTo(tunnel:GetPivot())
+	camion.Parent = S.Dossier
+
+	local C = {modele = camion, livre = false, top = top}
+	S.Camion = C
+
+	task.spawn(function()
+		task.wait(0.3)
+		-- la branche : tunnel -> noeud N ... -> noeud 1 (sur la route, devant l'entree)
+		local n1
+		for i = #nodes:GetChildren(), 1, -1 do
+			local n = nodes:FindFirstChild(tostring(i))
+			if n and camion.Parent then CarManager.AnimationNodeCar(camion, n, false); n1 = n end
+		end
+		-- devant le plot : a mi-chemin entre l'entree (noeud 1) et la route apres la sortie (ExitNodes 2)
+		local e2 = exits:FindFirstChild("2")
+		if n1 and e2 and camion.Parent then
+			local milieu = CFrame.lookAt(n1.Position:Lerp(e2.Position, 0.5), e2.Position)
+			CarManager.AnimationNodeCar(camion, milieu, false)
+		end
+		if not camion.Parent then return end
+		-- devant le plot : on livre au top (le camion patiente une fraction de seconde s'il est en avance)
+		local avance = top - maintenant()
+		if avance > 0 then task.wait(math.min(avance, 5)) end
+		C.livre = true
+		if S.Camion == C then S.Camion = nil end
+		if player.Parent then livrer(player, S) end
+		-- et il repart de l'autre cote
+		local i = 2
+		local cible = exits:FindFirstChild(tostring(i))
+		while cible and camion.Parent do
+			CarManager.AnimationNodeCar(camion, cible, false)
+			i += 1
+			cible = exits:FindFirstChild(tostring(i))
+		end
+		camion:Destroy()
+	end)
+end
+
+-- horloge des tops : a chaque minute ronde, si le joueur a une commande en attente, le camion est parti assez tot
+-- pour passer devant le plot au top
+local function horloge(player, S)
+	local trajet = etaDepuisTunnel(S.SpawnFolder)
+	while Sessions[player.UserId] == S and S.Dossier.Parent do
+		local t = maintenant()
+		local top = prochainTop(t + trajet)                  -- premier top qu'on peut encore atteindre en partant maintenant
+		local depart = top - trajet
+		if depart > t then task.wait(depart - t) end
+		if Sessions[player.UserId] ~= S or not S.Dossier.Parent then break end
+		S.Depart = top                                        -- l'heure du depart pour ce top est passee (commande ou pas)
+		local data = PlayerData.GetData(player)
+		if data and #livraisonsDe(data) > 0 then Livraison.Envoyer(player, top) end
+		task.wait(math.max(0.5, top - maintenant()) + 0.1)   -- jusqu'au top, puis on vise le suivant
+	end
+end
+
+-- ======================================================================================================================
+-- SESSIONS
+-- ======================================================================================================================
+function Livraison.Start(player, spawnFolder)
+	if Sessions[player.UserId] then return end
+	local dossier = Instance.new("Folder"); dossier.Name = "Livraisons_" .. player.UserId; dossier.Parent = workspace
+	local S = {SpawnFolder = spawnFolder, Dossier = dossier, Camion = nil, Depart = nil}
+	Sessions[player.UserId] = S
+	task.spawn(horloge, player, S)
+	-- une commande payee avant de quitter : le joueur voit tout de suite son compte a rebours
+	local data = PlayerData.GetData(player)
+	if data and #livraisonsDe(data) > 0 then task.delay(3, function() if Sessions[player.UserId] == S then Event:FireClient(player, "commande", Livraison.Delai(S)) end end) end
+end
+
+function Livraison.Stop(player)
+	local S = Sessions[player.UserId]
+	if S then S.Dossier:Destroy() end
+	Sessions[player.UserId] = nil
+end
+
+return Livraison

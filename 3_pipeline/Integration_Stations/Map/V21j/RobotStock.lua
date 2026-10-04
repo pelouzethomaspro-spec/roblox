@@ -1,0 +1,123 @@
+-- RobotStock : Script (ServerScriptService). V21i : robot automatique de gestion du stock au plafond des
+-- hangars de stockage (8 coins). Pont roulant : le pont roule le long des chemins de roulement, le chariot
+-- roule sur le pont, la colonne telescopique descend la pince qui prend le carton et le repose sur la zone
+-- suivante (zone robot au sol -> dessus d'une rangee -> convoyeur du poste d'emballage -> autre rangee -> ...).
+-- Les pieces sont les MeshParts du FBX "Bloc_<coin>_9_hangar_robot_<piece>" (pont, chariot, cable, pince,
+-- bras = bras robot de la chaine M4 retourne, carton) ; les 3 reperes repO / repS / repL donnent le repere local du hangar (les coins NO, SO, SE
+-- sont des copies tournees : le repere suit la rotation). Donnees generees par hangar.py.
+local TS = game:GetService("TweenService")
+
+local R = {
+	s0 = 38.95, l0 = 65.75, zg0 = -7.00,   -- position de depart (chariot / pince au-dessus de la zone robot)
+	lmin = 0.00, lmax = 75.75, smin = 3.00, smax = 93.00,
+	hc = 12.92,   -- haut de la pince - dessous du carton
+	spots = {
+	{s = 38.95, l = 65.75, z = -35.80},
+	{s = 7.95, l = 64.75, z = -35.80}
+	},
+}
+
+local VITESSE = 9          -- studs / s (deplacements horizontaux)
+local VITESSE_Z = 7        -- studs / s (montee / descente)
+local PAUSE = 0.8
+
+-- attend que la map soit installee (Lancement / InstallerMap pose les copies des 3 autres coins)
+local function chercher()
+	local r, n = {}, 0
+	for _, p in ipairs(workspace:GetDescendants()) do
+		if p:IsA("BasePart") then
+			local coin, piece = string.match(p.Name, "^(Bloc_%u+_%l)_9_hangar_robot_(%a+)")
+			if coin then
+				if not r[coin] then r[coin] = {}; n = n + 1 end
+				r[coin][piece] = p
+			end
+		end
+	end
+	return r, n
+end
+local robots, nb = chercher()
+local t0 = os.clock()
+while nb < 8 and os.clock() - t0 < 60 do
+	task.wait(2)
+	robots, nb = chercher()
+end
+
+local function lancer(coin, P)
+	if not (P.repO and P.repS and P.repL and P.pont and P.chariot and P.cable and P.pince and P.bras and P.carton) then
+		warn("[RobotStock] pieces manquantes : " .. coin)
+		return
+	end
+	for _, k in ipairs({"repO", "repS", "repL"}) do P[k].Transparency = 1 end
+	for _, k in ipairs({"pont", "chariot", "cable", "pince", "bras", "carton"}) do
+		P[k].Anchored = true; P[k].CanCollide = false; P[k].CanQuery = false; P[k].CanTouch = false
+	end
+	local O = P.repO.Position
+	local dS = (P.repS.Position - O).Unit
+	local dL = (P.repL.Position - O).Unit
+	local UP = Vector3.new(0, 1, 0)
+	local init = {}
+	for _, k in ipairs({"pont", "chariot", "cable", "pince", "bras", "carton"}) do init[k] = P[k].CFrame end
+	local tailleCable = P.cable.Size
+	local etat = {s = R.s0, l = R.l0, z = R.zg0}
+	local porte = false
+	local decal = nil          -- carton - pince, quand le carton est porte
+
+	local function cibles(s, l, z)
+		local dl, ds, dz = l - R.l0, s - R.s0, z - R.zg0
+		local h = dL * dl
+		local hs = h + dS * ds
+		local t = {
+			pont = init.pont + h,
+			chariot = init.chariot + hs,
+			pince = init.pince + hs + UP * dz,
+			bras = init.bras + hs + UP * dz,
+			cable = init.cable + hs + UP * (dz / 2),
+		}
+		if porte then t.carton = CFrame.new(t.pince.Position + decal) * (init.carton - init.carton.Position) end
+		return t, tailleCable + Vector3.new(0, -dz, 0)
+	end
+
+	local function aller(s, l, z, vit)
+		s = math.clamp(s, R.smin, R.smax); l = math.clamp(l, R.lmin, R.lmax)
+		local d = math.max(math.abs(s - etat.s), math.abs(l - etat.l), math.abs(z - etat.z))
+		local duree = math.max(d / vit, 0.15)
+		local info = TweenInfo.new(duree, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+		local t, taille = cibles(s, l, z)
+		local dernier
+		for k, cf in pairs(t) do
+			local props = {CFrame = cf}
+			if k == "cable" then props.Size = taille end
+			dernier = TS:Create(P[k], info, props)
+			dernier:Play()
+		end
+		task.wait(duree)
+		etat.s, etat.l, etat.z = s, l, z
+	end
+
+	local k = 1                      -- le carton est sur la zone 1 (zone robot)
+	task.wait(2 + math.random() * 4)
+	while P.pont.Parent do
+		local a = R.spots[k]
+		aller(a.s, a.l, R.zg0, VITESSE)
+		aller(a.s, a.l, a.z + R.hc, VITESSE_Z)
+		task.wait(PAUSE)
+		decal = P.carton.Position - P.pince.Position
+		porte = true                  -- prise
+		aller(a.s, a.l, R.zg0, VITESSE_Z)
+		k = k % #R.spots + 1
+		local b = R.spots[k]
+		aller(b.s, b.l, R.zg0, VITESSE)
+		aller(b.s, b.l, b.z + R.hc, VITESSE_Z)
+		task.wait(PAUSE)
+		porte = false                 -- depose
+		aller(b.s, b.l, R.zg0, VITESSE_Z)
+		task.wait(2 + math.random() * 3)
+	end
+end
+
+local n = 0
+for coin, P in pairs(robots) do
+	n = n + 1
+	task.spawn(lancer, coin, P)
+end
+print(("[RobotStock] %d robots de stock animes"):format(n))

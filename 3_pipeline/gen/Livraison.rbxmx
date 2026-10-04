@@ -1,0 +1,586 @@
+<roblox version="4">
+<Item class="ModuleScript"><Properties><string name="Name">Livraison</string><ProtectedString name="Source">--[[ Livraison (ModuleScript, ServerScriptService) — le CAMION DE LIVRAISON du Stock (v36 : le van a cartons).
+	Les livraisons partent par CYCLES D'UNE MINUTE, sur une horloge continue commune a tout le serveur (heure serveur :
+	le top tombe a chaque minute ronde). Quand un joueur commande des consommables (onglet Stock), il paie tout de suite ;
+	au top suivant, un VAN part du tunnel du plot avec sa commande.
+
+	Le van (modele ReplicatedStorage/CamionA, le fourgon a cartons de Thomas ; sinon le camion, sinon des briques) :
+	  1. sort du tunnel, prend la branche, la route du tour, le rond-point du cote (sens antihoraire), l'avenue vers le
+	     centre puis la bretelle du garage "b" de l'atelier du cote (RoutesAmbiance.Livraison.PlotN, conduite a droite) ;
+	  2. s'arrete devant la porte ouverte du garage, dos a la cour : ses portes arriere s'ouvrent et les cartons tombent
+	     (script CamionCartons v2 de Thomas, niveau Peu / Moyen / Plein selon la taille de la commande) ;
+	  3. entre dans le garage, le rideau se ferme, le van disparait, le rideau se rouvre (le van d'origine du garage
+	     est de nouveau la : il etait cache pendant la course).
+	Les cartons restent au sol devant le garage : le JOUEUR va les recuperer (E sur un carton : tout le lot est credite),
+	ou son LOGISTICIEN (employe affecte au garage, WorkerManager) va les chercher tout seul.
+	Ce qui est en attente est enregistre dans le profil (data.Livraisons) : si le joueur quitte avant d'avoir recupere,
+	le van revient au premier top apres sa prochaine connexion. Rien n'est perdu, rien ne vient du client.
+
+	Client (RemoteEvent LivraisonEvent) : ("commande", eta), ("camion", van, cinema, nomGarage) au depart du van (cinema =
+	true a chaque livraison : camera cinematique cote client), ("deposee", nbCartons, nomGarage) quand les cartons sont
+	au sol, ("livree", liste) quand le lot est credite. Attributs du van : Etape = "route" | "dechargement" | "garage".
+]]
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+local ServerStorage = game:GetService("ServerStorage")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+
+local PlayerData = require(ServerScriptService:WaitForChild("PlayerData"))
+local StoreManager = require(ServerScriptService:WaitForChild("StoreManager"))
+local CarManager = require(ServerScriptService:WaitForChild("CarManager"))
+local Catalogue = require(ReplicatedStorage:WaitForChild("Catalogue"))
+local okR, Routes = pcall(function() return require(ServerStorage:WaitForChild("RoutesAmbiance", 10)) end)
+if not okR then warn("[Livraison] RoutesAmbiance introuvable : " .. tostring(Routes)); Routes = {} end
+
+local CYCLE = 60                  -- secondes entre deux tops de livraison (horloge serveur continue, commune a tous)
+local Car = require(ReplicatedStorage:WaitForChild("Catalogue"):WaitForChild("Car"))
+local LONGUEUR_VAN = Car.Longueur("Fourgon")   -- studs : Sprinter 5,93 m a l'echelle du jeu (M4 = Car.LONGUEUR_M4)
+-- v49 (demande de Thomas) : le livreur BOMBARDE. Il sort du tunnel sur la voie de GAUCHE, fonce sur la branche et la route du
+-- tour, coupe le rond-point par le plus court (a contresens quand la cour est de l'autre cote) en DERAPANT (voitures :
+-- TWEENController, etat 4 = derapage : survirage + fumee des pneus), sort par la coupure du trottoir dans la cour et pile
+-- devant le garage. Les trajets sont dans RoutesAmbiance.Livraison (gen_map_v21.py) et LivraisonInfos (indice du rond-point).
+local VITESSE = 80                -- studs/s sur la route (voitures clientes : 34)
+local VITESSE_ROND_POINT = 52     -- dans le rond-point (derapage)
+local VITESSE_COUR = 16           -- dans la cour et le garage
+local MAX_QUANTITE = 99
+local NIVEAUX = {{6, "Peu"}, {18, "Moyen"}, {math.huge, "Plein"}}   -- quantite totale commandee -&gt; niveau de cartons
+local DUREE_RIDEAU = 1.6          -- secondes pour fermer / ouvrir le rideau du garage
+local DELAI_LOGISTICIEN = 3       -- secondes avant que le logisticien aille chercher les cartons
+
+local function maintenant() return workspace:GetServerTimeNow() end
+local function prochainTop(t) return math.ceil(t / CYCLE) * CYCLE end            -- premier top strictement apres t (ou = t)
+
+local Event = ReplicatedStorage:FindFirstChild("LivraisonEvent")
+if not Event then Event = Instance.new("RemoteEvent"); Event.Name = "LivraisonEvent"; Event.Parent = ReplicatedStorage end
+
+local Livraison = {}
+local Sessions = {}     -- [userId] = { SpawnFolder, Dossier, Camion = { modele, livre, top }, Depart = top dont le depart est passe, Cartons = {} }
+
+local function decalage()
+	local d = workspace:GetAttribute("DecalageMap")
+	return typeof(d) == "Vector3" and d or Vector3.zero
+end
+local function cframeNoeud(n)
+	local pos = Vector3.new(n[1], n[2], n[3]) + decalage()
+	return CFrame.lookAt(pos, pos + Vector3.new(n[4], 0, n[5]))
+end
+
+-- ======================================================================================================================
+-- CAMION PROVISOIRE (briques) : dimensions du camion.obj de Thomas, avant vers -Z
+-- ======================================================================================================================
+local function brique(parent, nom, taille, cf, couleur, materiau, transparence)
+	local p = Instance.new("Part")
+	p.Name = nom; p.Size = taille; p.CFrame = cf; p.Color = couleur
+	p.Material = materiau or Enum.Material.SmoothPlastic; p.Transparency = transparence or 0
+	p.TopSurface = Enum.SurfaceType.Smooth; p.BottomSurface = Enum.SurfaceType.Smooth
+	p.Anchored = true; p.CanCollide = false; p.CanQuery = false; p.CanTouch = false; p.CastShadow = true
+	p.Parent = parent
+	return p
+end
+
+local function camionProvisoire()
+	local m = Instance.new("Model"); m.Name = "Camion"
+	local GRIS_CLAIR = Color3.fromRGB(156, 156, 163)
+	local GRIS = Color3.fromRGB(107, 107, 107)
+	local NOIR = Color3.fromRGB(18, 18, 20)
+	local ARDOISE = Color3.fromRGB(90, 93, 107)
+	local VERRE = Color3.fromRGB(120, 160, 190)
+	brique(m, "Chassis", Vector3.new(8.3, 2.7, 19.4), CFrame.new(0, 1.4, 0.1), NOIR)
+	brique(m, "Caisse", Vector3.new(7.8, 7.7, 14.1), CFrame.new(0, 6.95, 4.7), GRIS_CLAIR)
+	brique(m, "Caisse_Bord", Vector3.new(8.0, 0.4, 14.3), CFrame.new(0, 10.6, 4.7), ARDOISE)
+	brique(m, "Portes_AR", Vector3.new(7.6, 7.4, 0.15), CFrame.new(0, 6.95, 11.8), GRIS)
+	brique(m, "Cabine", Vector3.new(7.7, 6.3, 9.4), CFrame.new(0, 5.75, -7.2), GRIS)
+	brique(m, "Toit_Cabine", Vector3.new(7.7, 1.2, 8.6), CFrame.new(0, 9.5, -7.4), GRIS)
+	brique(m, "ParBrise", Vector3.new(7.2, 3.0, 0.3), CFrame.new(0, 6.9, -11.75), VERRE, Enum.Material.Glass, 0.3)
+	brique(m, "Calandre", Vector3.new(9.2, 1.2, 0.5), CFrame.new(0, 5.9, -11.85), NOIR, Enum.Material.Metal)
+	brique(m, "ParChoc", Vector3.new(6.8, 2.1, 1.3), CFrame.new(0, 2.7, -11.0), Color3.fromRGB(240, 240, 240))
+	brique(m, "Phare_G", Vector3.new(1.4, 0.8, 0.2), CFrame.new(-3.0, 4.6, -11.95), Color3.fromRGB(255, 250, 200), Enum.Material.Neon)
+	brique(m, "Phare_D", Vector3.new(1.4, 0.8, 0.2), CFrame.new(3.0, 4.6, -11.95), Color3.fromRGB(255, 250, 200), Enum.Material.Neon)
+	for _, r in ipairs({{"Roue_AVG", -3.4, -7.3}, {"Roue_AVD", 3.4, -7.3}, {"Roue_ARG", -3.4, 8.45}, {"Roue_ARD", 3.4, 8.45}}) do
+		local roue = brique(m, r[1], Vector3.new(1.6, 4.4, 4.4), CFrame.new(r[2], 2.2, r[3]), NOIR, Enum.Material.Rubber)
+		roue.Shape = Enum.PartType.Cylinder
+	end
+	return m
+end
+
+local function modeleVan()
+	local m = ReplicatedStorage:FindFirstChild("CamionA")
+	if m and m:IsA("Model") and m:FindFirstChildWhichIsA("BasePart", true) then return m, true end
+	m = ReplicatedStorage:FindFirstChild("Camion")
+	if m and m:IsA("Model") and m:FindFirstChildWhichIsA("BasePart", true) then return m, false end
+	local prov = ReplicatedStorage:FindFirstChild("Camion_Provisoire")
+	if not prov then prov = camionProvisoire(); prov.Name = "Camion_Provisoire"; prov.Parent = ReplicatedStorage end
+	return prov, false
+end
+
+-- ======================================================================================================================
+-- COMMANDES
+-- ======================================================================================================================
+local function livraisonsDe(data)
+	if type(data.Livraisons) ~= "table" then data.Livraisons = {} end
+	return data.Livraisons
+end
+
+local function volumeEnRoute(data)
+	local total = 0
+	for _, l in ipairs(livraisonsDe(data)) do
+		local infos = Catalogue.GetInfo("Consommable", l.item)
+		if infos and infos.Volume then total += infos.Volume * l.qte end
+	end
+	return total
+end
+
+local function quantiteEnRoute(data)
+	local n = 0
+	for _, l in ipairs(livraisonsDe(data)) do n += l.qte end
+	return n
+end
+
+local function niveauPour(quantite)
+	for _, n in ipairs(NIVEAUX) do if quantite &lt;= n[1] then return n[2] end end
+	return "Plein"
+end
+
+-- longueur du trajet du tunnel au garage (pour annoncer le delai)
+local function etaDepuisTunnel(spawnFolder)
+	local route = Routes.Livraison and Routes.Livraison[spawnFolder.Name]
+	local d = 0
+	if route then
+		for i = 2, #route do d += (Vector3.new(route[i][1], 0, route[i][3]) - Vector3.new(route[i - 1][1], 0, route[i - 1][3])).Magnitude end
+	else
+		d = 900
+	end
+	return d * 1.04 / VITESSE + 2
+end
+
+-- Achat cote Stock : paie tout de suite, la marchandise arrive par le van. Retourne (true, secondes) ou false.
+function Livraison.Commander(player, itemID, quantite)
+	if type(itemID) ~= "string" or type(quantite) ~= "number" or quantite ~= quantite then return false end
+	quantite = math.floor(quantite)
+	if quantite &lt;= 0 or quantite &gt; MAX_QUANTITE then return false end
+	local infos = Catalogue.GetInfo("Consommable", itemID)
+	if not infos or not infos.Buy or not infos.Volume then return false end
+	local data = PlayerData.GetData(player)
+	if not data then return false end
+
+	local prix = infos.Buy * quantite
+	if PlayerData.GetMoney(player) &lt; prix then return false end
+	local volume = StoreManager.GetCurrentVolume(player) + volumeEnRoute(data) + infos.Volume * quantite
+	if volume &gt; StoreManager.GetMaxVolume(player) then return false end
+
+	PlayerData.SpendMoney(player, prix)
+	local liste = livraisonsDe(data)
+	local trouve = false
+	for _, l in ipairs(liste) do if l.item == itemID then l.qte += quantite; trouve = true break end end
+	if not trouve then table.insert(liste, {item = itemID, qte = quantite}) end
+
+	local S = Sessions[player.UserId]
+	if not S then return true, 0 end                       -- pas encore de plot : livre au premier top apres le Start
+	local delai = Livraison.Delai(S)
+	pcall(function() player:SetAttribute("NextDelivery", os.time() + math.floor(delai)) end)   -- UI v23 : chrono du Stock
+	return true, delai
+end
+
+-- secondes avant le depart du van avec ce qui est en attente : le prochain top, sauf si le van de ce top est deja
+-- parti (ou si des cartons sont deja au sol : ils partiront avec le top suivant)
+function Livraison.Delai(S)
+	local t = maintenant()
+	local top = prochainTop(t)
+	if S.Camion and not S.Camion.livre then return math.max(0.5, S.Camion.top - t) + etaDepuisTunnel(S.SpawnFolder) end
+	if S.Depart and S.Depart == top then top += CYCLE end                                 -- le depart de ce top est passe
+	return top - t + etaDepuisTunnel(S.SpawnFolder)
+end
+
+-- ======================================================================================================================
+-- GARAGES : rideau, van gare (cache pendant la course), poste du logisticien
+-- ======================================================================================================================
+local Garages = {}      -- [nom] = { porte = Part, caisson, ferme = bool, van = Model (celui du decor), occupe = bool }
+
+local function vehiculesDecor()
+	return workspace:FindFirstChild("Vehicules")
+end
+
+local function garage(nomPlot)
+	local G = Routes.Garages and Routes.Garages[nomPlot]
+	if not G then return nil end
+	local g = Garages[G.nom]
+	if g then return g, G end
+	local d = decalage()
+	local porte = G.porte + d
+	local dedans = G.dedans
+	local face = CFrame.lookAt(porte, porte + dedans)                              -- Z local = vers l'exterieur, X = le long de la porte
+	local dossier = workspace:FindFirstChild("RideauxGarages")
+	if not dossier then
+		dossier = Instance.new("Model"); dossier.Name = "RideauxGarages"
+		pcall(function() dossier.ModelStreamingMode = Enum.ModelStreamingMode.Persistent end)
+		dossier.Parent = workspace
+	end
+	-- caisson du rideau (fixe) au-dessus de l'ouverture (20 x 19 studs)
+	local caisson = Instance.new("Part"); caisson.Name = "Caisson_" .. G.nom
+	caisson.Size = Vector3.new(21, 1.4, 1.2); caisson.Anchored = true; caisson.CanCollide = false; caisson.CanQuery = false; caisson.CanTouch = false
+	caisson.Color = Color3.fromRGB(78, 82, 88); caisson.Material = Enum.Material.Metal
+	caisson.CFrame = face * CFrame.new(0, 19.3, 0.2); caisson.Parent = dossier
+	-- le rideau : ferme = 19 studs de haut ; ouvert = enroule dans le caisson (0.2 stud)
+	local rideau = Instance.new("Part"); rideau.Name = "Rideau_" .. G.nom
+	rideau.Size = Vector3.new(20, 0.2, 0.5); rideau.Anchored = true; rideau.CanCollide = false; rideau.CanQuery = false; rideau.CanTouch = false
+	rideau.Color = Color3.fromRGB(236, 236, 232); rideau.Material = Enum.Material.Metal
+	rideau.CFrame = face * CFrame.new(0, 18.5, 0.2); rideau.Parent = dossier
+	-- lignes horizontales du rideau sectionnel (bandes sombres)
+	for i = 1, 5 do
+		local l = Instance.new("Part"); l.Name = "Ligne"; l.Size = Vector3.new(20.02, 0.12, 0.52); l.Anchored = true
+		l.CanCollide = false; l.CanQuery = false; l.CanTouch = false; l.Color = Color3.fromRGB(170, 172, 168); l.Material = Enum.Material.Metal
+		l.CFrame = rideau.CFrame; l.Transparency = 1; l.Parent = rideau
+		l:SetAttribute("k", i / 6)
+	end
+	local van
+	local v = vehiculesDecor()
+	if v then van = v:FindFirstChild("Van_" .. G.nom) end
+	g = {porte = rideau, caisson = caisson, face = face, ferme = false, van = van, occupe = false, nom = G.nom, dedans = dedans, position = porte}
+	Garages[G.nom] = g
+	return g, G
+end
+
+local function rideau(g, fermer)
+	local h = fermer and 19 or 0.2
+	local cible = g.face * CFrame.new(0, 19.3 - 0.7 - h / 2, 0.2)
+	local tw = TweenService:Create(g.porte, TweenInfo.new(DUREE_RIDEAU, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), {Size = Vector3.new(20, h, 0.5), CFrame = cible})
+	tw:Play()
+	-- les lignes suivent (elles sont dans le rideau, ancrees : on les recale a chaque frame)
+	local lignes = g.porte:GetChildren()
+	local c
+	c = RunService.Heartbeat:Connect(function()
+		local hh = g.porte.Size.Y
+		for _, l in ipairs(lignes) do
+			if l:IsA("BasePart") then
+				local k = l:GetAttribute("k") or 0.5
+				l.CFrame = g.porte.CFrame * CFrame.new(0, hh / 2 - hh * k, 0.02)
+				l.Transparency = hh &gt; 3 and 0 or 1
+			end
+		end
+	end)
+	tw.Completed:Wait()
+	task.wait()
+	c:Disconnect()
+	g.ferme = fermer
+end
+
+local function vanDecor(g, visible)
+	if not (g.van and g.van.Parent) then return end
+	for _, p in ipairs(g.van:GetDescendants()) do
+		if p:IsA("BasePart") then
+			if not visible then
+				if p:GetAttribute("T0") == nil then p:SetAttribute("T0", p.Transparency) end
+				p.Transparency = 1
+			else
+				p.Transparency = p:GetAttribute("T0") or 0
+			end
+		end
+	end
+end
+
+-- position (monde) du poste du logisticien et du tas de cartons pour le garage du joueur
+function Livraison.GarageDe(player)
+	local S = Sessions[player.UserId]
+	if not S then return nil end
+	local g, G = garage(S.SpawnFolder.Name)
+	if not g then return nil end
+	local face = g.face
+	return {
+		nom = g.nom,
+		poste = face * CFrame.new(-14, 0, 6) * CFrame.Angles(0, math.pi, 0),        -- a cote de la porte, dehors, face a la cour
+		cartons = (face * CFrame.new(0, 0, 44)).Position,                          -- la ou tombent les cartons (dos du van)
+		porte = g.position,
+	}
+end
+
+-- ======================================================================================================================
+-- CARTONS : depot, invite de recuperation, credit du lot
+-- ======================================================================================================================
+local function livrer(player, S)
+	local data = PlayerData.GetData(player)
+	if not data then return end
+	local liste = livraisonsDe(data)
+	local resume = {}
+	for _, l in ipairs(liste) do
+		PlayerData.AddItem(player, l.item, l.qte)
+		local infos = Catalogue.GetInfo("Consommable", l.item)
+		table.insert(resume, {item = l.item, nom = infos and infos.Name or l.item, qte = l.qte})
+	end
+	data.Livraisons = {}
+	Event:FireClient(player, "livree", resume)
+end
+
+-- fait disparaitre les cartons (petit saut puis retrecissement) et credite le lot
+local function recuperer(player, S, par)
+	if not S.Cartons or S.recupere then return end
+	S.recupere = true
+	local cartons = S.Cartons
+	S.Cartons = nil
+	for _, c in ipairs(cartons) do
+		if c.Parent then
+			c.Anchored = true; c.CanCollide = false
+			for _, pr in ipairs(c:GetDescendants()) do if pr:IsA("ProximityPrompt") then pr.Enabled = false end end
+			TweenService:Create(c, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.In), {Size = c.Size * 0.05, CFrame = c.CFrame + Vector3.new(0, 3, 0)}):Play()
+		end
+	end
+	task.delay(0.4, function() for _, c in ipairs(cartons) do c:Destroy() end end)
+	if player.Parent then livrer(player, S) end
+	S.recupere = false
+	return true
+end
+
+-- cartons simples (si le van de Thomas ou son script manquent) : quelques briques jetees derriere le van
+local function cartonsSimples(van, niveau)
+	local n = ({Peu = 4, Moyen = 8, Plein = 14})[niveau] or 6
+	local root = van.PrimaryPart
+	local liste = {}
+	local dossier = workspace:FindFirstChild("CamionCartons_Cartons")
+	if not dossier then dossier = Instance.new("Folder"); dossier.Name = "CamionCartons_Cartons"; dossier.Parent = workspace end
+	for i = 1, n do
+		local c = Instance.new("Part"); c.Name = "Carton"; c.Size = Vector3.new(2.2, 1.7, 2.0) * (0.8 + math.random() * 0.5)
+		c.Color = Color3.fromRGB(196, 150, 98); c.Material = Enum.Material.Wood
+		c.CFrame = root.CFrame * CFrame.new(math.random(-2, 2), 6, 14 + i * 0.6) * CFrame.Angles(math.random() * 0.4, math.random() * 6, 0)
+		c.Parent = dossier
+		c.AssemblyLinearVelocity = root.CFrame.LookVector * -8 + Vector3.new(0, 2, 0)
+		table.insert(liste, c)
+		task.wait(0.15)
+	end
+	return liste
+end
+
+-- le van est a l'arret devant la porte : on installe le script de Thomas dedans (il mesure le fourgon la ou il est),
+-- on declenche le niveau demande et on attend la fin (BindableEvent Termine, ajoute au script : liste des cartons)
+local function decharger(van, niveau, avecScript)
+	local modele = ServerStorage:FindFirstChild("CamionCartons")
+	if not (avecScript and modele and modele:IsA("Script")) then return cartonsSimples(van, niveau) end
+	local s = modele:Clone()
+	s.Parent = van
+	local termine = s:FindFirstChild("Termine") or Instance.new("BindableEvent")
+	termine.Name = "Termine"; termine.Parent = s
+	local declencher = s:FindFirstChild("Declencher") or Instance.new("BindableEvent")
+	declencher.Name = "Declencher"; declencher.Parent = s
+	local resultat
+	local c = termine.Event:Connect(function(liste) resultat = liste or {} end)
+	s.Enabled = true
+	task.wait(0.6)
+	declencher:Fire(niveau)
+	local t0 = os.clock()
+	while resultat == nil and os.clock() - t0 &lt; 25 and van.Parent do task.wait(0.2) end
+	c:Disconnect()
+	if resultat == nil then
+		warn("[Livraison] CamionCartons n'a pas repondu : cartons simples")
+		return cartonsSimples(van, niveau)
+	end
+	return resultat
+end
+
+local function inviterRecuperation(player, S, cartons)
+	for _, c in ipairs(cartons) do
+		if c.Parent then
+			c:SetAttribute("Livraison", player.UserId)
+			local pr = Instance.new("ProximityPrompt"); pr.Name = "Recuperer"
+			pr.ActionText = "Récupérer la livraison"; pr.ObjectText = "Cartons de " .. player.DisplayName
+			pr.KeyboardKeyCode = Enum.KeyCode.E; pr.HoldDuration = 0.4; pr.MaxActivationDistance = 12; pr.RequiresLineOfSight = false
+			pr.Parent = c
+			pr.Triggered:Connect(function(qui)
+				if qui ~= player then
+					Event:FireClient(qui, "message", "Ce sont les cartons de " .. player.DisplayName .. ", pas les tiens !")
+					return
+				end
+				recuperer(player, S, "joueur")
+			end)
+		end
+	end
+end
+
+-- le logisticien du joueur (employe affecte au garage) va chercher les cartons
+local function logisticien(player)
+	local data = PlayerData.GetData(player)
+	local id = data and data.Garage and data.Garage.Garage and data.Garage.Garage.Worker
+	if not id or id == "Automatic" then return nil end
+	local dossier = workspace:FindFirstChild("Plots") and workspace.Plots:FindFirstChild(player.Name .. "'s plot")
+	local pnj = dossier and dossier:FindFirstChild(id)
+	return pnj
+end
+
+local function marcher(pnj, cible, vitesse)
+	local depart = pnj:GetPivot()
+	local arrivee = CFrame.lookAt(Vector3.new(cible.X, depart.Position.Y, cible.Z), Vector3.new(cible.X, depart.Position.Y, cible.Z) + (Vector3.new(cible.X, 0, cible.Z) - Vector3.new(depart.Position.X, 0, depart.Position.Z)).Unit)
+	local d = (arrivee.Position - depart.Position).Magnitude
+	local duree = math.clamp(d / (vitesse or 10), 0.3, 6)
+	local hum = pnj:FindFirstChildOfClass("Humanoid")
+	local anim
+	if hum then
+		local animator = hum:FindFirstChildOfClass("Animator") or Instance.new("Animator", hum)
+		local a = Instance.new("Animation"); a.AnimationId = "rbxassetid://180426354"    -- marche R6 de Roblox
+		local ok, track = pcall(function() return animator:LoadAnimation(a) end)
+		if ok and track then anim = track; track:Play() end
+	end
+	local t0 = os.clock()
+	local regard = CFrame.lookAt(depart.Position, Vector3.new(arrivee.Position.X, depart.Position.Y, arrivee.Position.Z))
+	while true do
+		local u = math.min(1, (os.clock() - t0) / duree)
+		local p = depart.Position:Lerp(arrivee.Position, u)
+		pnj:PivotTo(CFrame.new(p) * (regard - regard.Position))
+		if u &gt;= 1 then break end
+		RunService.Heartbeat:Wait()
+		if not pnj.Parent then break end
+	end
+	if anim then anim:Stop() end
+end
+
+local function logisticienRecupere(player, S)
+	local pnj = logisticien(player)
+	if not (pnj and pnj.Parent and S.Cartons) then return end
+	local infos = Livraison.GarageDe(player)
+	if not infos then return end
+	-- vers le tas (le milieu des cartons encore au sol)
+	local somme, n = Vector3.zero, 0
+	for _, c in ipairs(S.Cartons) do if c.Parent then somme += c.Position; n += 1 end end
+	if n == 0 then return end
+	local tas = somme / n
+	local retour = pnj:GetPivot()
+	marcher(pnj, tas + (retour.Position - tas).Unit * 4)
+	task.wait(0.6)
+	if S.Cartons then recuperer(player, S, "logisticien") end
+	task.wait(0.4)
+	marcher(pnj, retour.Position)
+	pnj:PivotTo(retour)
+end
+Livraison.LogisticienRecupere = logisticienRecupere
+function Livraison.SessionDe(player) return Sessions[player.UserId] end
+
+-- ======================================================================================================================
+-- LE VAN
+-- ======================================================================================================================
+function Livraison.Envoyer(player, top)
+	local S = Sessions[player.UserId]
+	if not S or not S.Dossier.Parent then return end
+	local sf = S.SpawnFolder
+	local route = Routes.Livraison and Routes.Livraison[sf.Name]
+	if not route or #route &lt; 8 then warn("[Livraison] pas de trajet pour " .. sf.Name); return end
+	local g = garage(sf.Name)
+	if not g then warn("[Livraison] pas de garage pour " .. sf.Name); return end
+	local data = PlayerData.GetData(player)
+	if not data then return end
+	local niveau = niveauPour(quantiteEnRoute(data))
+
+	local modele, avecScript = modeleVan()
+	local van = CarManager.SpawnCar(modele, LONGUEUR_VAN)
+	van.Name = "Van_" .. tostring(math.floor(os.clock() * 1000) % 100000000)     -- nom unique : le client le retrouve par WaitForChild
+	van:SetAttribute("Camion", true)
+	van:SetAttribute("Proprietaire", player.UserId)
+	van:SetAttribute("Niveau", niveau)
+	van:SetAttribute("Etape", "route")
+	van:SetAttribute("Garage", g.nom)
+	van:PivotTo(cframeNoeud(route[1]))
+	pcall(function() van.ModelStreamingMode = Enum.ModelStreamingMode.Persistent end)   -- il s'eloigne a plus de 1 000 studs : toujours chez le client (camera)
+	van.Parent = S.Dossier
+
+	local C = {modele = van, livre = false, top = top}
+	S.Camion = C
+	if not g.occupe then vanDecor(g, false) end
+	local cinema = true                                 -- camera cinematique a CHAQUE livraison (demande de Thomas)
+
+	task.spawn(function()
+		task.wait(0.3)
+		Event:FireClient(player, "camion", S.Dossier, cinema, g.nom, van.Name)     -- le client attend le modele (WaitForChild) : il peut ne pas etre encore replique
+		-- 1. la route : tous les noeuds sauf les 3 derniers (devant la porte, la porte, dedans). Dans le rond-point
+		--    (LivraisonInfos.anneau = 1er noeud de l'anneau, jusqu'a la sortie vers la cour = nFin - 2) : derapage (etat 4)
+		local nFin = #route - 3
+		local infos = Routes.LivraisonInfos and Routes.LivraisonInfos[sf.Name]
+		local iAnneau = infos and infos.anneau or math.huge
+		-- v55 : toute la route en une seule courbe continue (CarManager.AnimationTrajetCar) : plus d'a-coup aux noeuds,
+		-- derapage continu dans l'anneau (etat 4), arret devant la porte
+		local etapes = {}
+		for i = 2, nFin do
+			local v, etat = VITESSE, nil
+			if i &gt;= nFin - 1 then v = VITESSE_COUR
+			elseif i &gt;= iAnneau then v = VITESSE_ROND_POINT; etat = 4 end
+			table.insert(etapes, { cf = cframeNoeud(route[i]), vitesse = v, etat = etat })
+		end
+		table.insert(etapes, { cf = cframeNoeud(route[nFin + 1]), vitesse = VITESSE_COUR })
+		if not van.Parent then return end
+		CarManager.AnimationTrajetCar(van, etapes, VITESSE, true, true)
+		-- 2. dechargement
+		van:SetAttribute("Etape", "dechargement")
+		local cartons = decharger(van, niveau, avecScript)
+		C.livre = true
+		if S.Camion == C then S.Camion = nil end
+		S.Cartons = cartons
+		if player.Parent then
+			inviterRecuperation(player, S, cartons)
+			Event:FireClient(player, "deposee", #cartons, g.nom)
+		end
+		-- 3. dans le garage : on attend qu'il soit libre, on entre, rideau ferme, le van s'efface, rideau ouvert
+		local t0 = os.clock()
+		while g.occupe and os.clock() - t0 &lt; 30 do task.wait(0.5) end
+		g.occupe = true
+		vanDecor(g, false)
+		van:SetAttribute("Etape", "garage")
+		if van.Parent then CarManager.AnimationNodeCar(van, cframeNoeud(route[nFin + 2]), false, VITESSE_COUR) end
+		if van.Parent then CarManager.AnimationNodeCar(van, cframeNoeud(route[nFin + 3]), true, VITESSE_COUR * 0.6) end
+		task.wait(0.4)
+		rideau(g, true)
+		task.wait(0.8)
+		if van.Parent then van:Destroy() end
+		task.wait(1.2)
+		vanDecor(g, true)
+		rideau(g, false)
+		g.occupe = false
+		-- 4. le logisticien, s'il y en a un
+		if player.Parent and S.Cartons then
+			task.wait(DELAI_LOGISTICIEN)
+			if Sessions[player.UserId] == S then logisticienRecupere(player, S) end
+		end
+	end)
+end
+
+-- horloge des tops : a chaque minute ronde, si le joueur a une commande en attente (et pas de cartons deja au sol,
+-- pas de van en route), le van part
+local function horloge(player, S)
+	while Sessions[player.UserId] == S and S.Dossier.Parent do
+		local t = maintenant()
+		local top = prochainTop(t)
+		if top - t &gt; 0 then task.wait(top - t) end
+		if Sessions[player.UserId] ~= S or not S.Dossier.Parent then break end
+		S.Depart = top
+		local data = PlayerData.GetData(player)
+		if data and #livraisonsDe(data) &gt; 0 and not S.Camion and not S.Cartons then Livraison.Envoyer(player, top) end
+		task.wait(1)
+	end
+end
+
+-- ======================================================================================================================
+-- SESSIONS
+-- ======================================================================================================================
+function Livraison.Start(player, spawnFolder)
+	if Sessions[player.UserId] then return end
+	local dossier = Instance.new("Folder"); dossier.Name = "Livraisons_" .. player.UserId; dossier.Parent = workspace
+	local S = {SpawnFolder = spawnFolder, Dossier = dossier, Camion = nil, Depart = nil, Cartons = nil}
+	Sessions[player.UserId] = S
+	local g = garage(spawnFolder.Name)
+	if g then
+		player:SetAttribute("Garage", g.nom)
+		local infos = Livraison.GarageDe(player)
+		if infos then player:SetAttribute("GaragePoste", infos.poste); player:SetAttribute("GaragePorte", infos.porte) end
+	end
+	task.spawn(horloge, player, S)
+	-- une commande payee avant de quitter : le joueur voit tout de suite son compte a rebours
+	local data = PlayerData.GetData(player)
+	if data and #livraisonsDe(data) &gt; 0 then task.delay(3, function() if Sessions[player.UserId] == S then Event:FireClient(player, "commande", Livraison.Delai(S)) end end) end
+end
+
+function Livraison.Stop(player)
+	local S = Sessions[player.UserId]
+	if S then
+		if S.Cartons then for _, c in ipairs(S.Cartons) do c:Destroy() end end
+		S.Dossier:Destroy()
+	end
+	Sessions[player.UserId] = nil
+end
+
+return Livraison
+</ProtectedString></Properties></Item>
+</roblox>

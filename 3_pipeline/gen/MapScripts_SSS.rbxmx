@@ -1,0 +1,74 @@
+<roblox version="4">
+<Item class="Script"><Properties><string name="Name">Lancement</string><ProtectedString name="Source">-- Lancement : Script (ServerScriptService). A chaque "Jouer", installe la map si ce
+-- n'est pas deja fait dans la place (collisions invisibles, arbres, lumieres,
+-- point d'apparition). Pour l'enregistrer une fois pour toutes dans la place :
+-- barre de commandes -&gt; require(game.ServerStorage.InstallerMap)()  puis sauvegarder.
+local SS = game:GetService("ServerStorage")
+
+local function mapImportee()
+	for _, enfant in ipairs(workspace:GetChildren()) do
+		if enfant:IsA("Model") or enfant:IsA("Folder") then
+			for _, d in ipairs(enfant:GetDescendants()) do
+				if d:IsA("BasePart") and string.find(d.Name, "Sol_Herbe_0_0", 1, true) then
+					return enfant
+				end
+			end
+		end
+	end
+end
+
+local map = mapImportee()
+if not map then
+	warn("[Map] MAP_MOTIFS_V16_AVEC_CHAINES.fbx n'est pas encore importee dans Workspace "
+		.. "(Accueil &gt; Importer 3D). Importe aussi ARBRES_V16.fbx, puis relance Jouer.")
+	return
+end
+if map:FindFirstChild("Collisions") then
+	print("[Map] deja installee dans la place : rien a faire")
+	return
+end
+local ok, err = pcall(function()
+	require(SS:WaitForChild("InstallerMap"))()
+end)
+if not ok then warn("[Map] installation : " .. tostring(err)) end
+</ProtectedString></Properties></Item>
+<Item class="Script"><Properties><string name="Name">TailleJoueurs</string><bool name="Disabled">true</bool><ProtectedString name="Source">-- TailleJoueurs : Script a mettre dans ServerScriptService.
+-- Agrandit les personnages a l'echelle de la map : ~15 studs de haut, la largeur
+-- du trottoir (15,5 studs). Vitesse de marche et saut agrandis dans la meme
+-- proportion ; vitesses lues par le LocalScript "Course" (touche Maj).
+local Players = game:GetService("Players")
+
+local ECHELLE = 3                         -- avatar standard ~5 studs -&gt; ~15 studs
+local MARCHE = 16 * ECHELLE * 0.8         -- 38 studs/s (proportionnel, un peu retenu)
+local COURSE = MARCHE * 1.8               -- 69 studs/s avec Maj
+local SAUT = 7.2 * ECHELLE                -- hauteur de saut
+
+local function agrandir(perso)
+	local hum = perso:WaitForChild("Humanoid", 10)
+	if not hum or not perso:WaitForChild("HumanoidRootPart", 10) then return end
+	if math.abs(perso:GetScale() - ECHELLE) &gt; 1e-3 then
+		perso:ScaleTo(ECHELLE)
+	end
+	hum.UseJumpPower = false
+	hum.JumpHeight = SAUT
+	hum.WalkSpeed = MARCHE
+	hum:SetAttribute("VitesseMarche", MARCHE)
+	hum:SetAttribute("VitesseCourse", COURSE)
+end
+
+local function joueurArrive(joueur)
+	joueur.CameraMaxZoomDistance = 400    -- recul de camera adapte a la taille
+	-- on attend l'apparence complete (accessoires compris) avant d'agrandir
+	joueur.CharacterAppearanceLoaded:Connect(agrandir)
+	joueur.CharacterAdded:Connect(function(perso)
+		task.delay(4, function()          -- secours si l'apparence ne se charge pas
+			if perso.Parent then agrandir(perso) end
+		end)
+	end)
+	if joueur.Character then task.spawn(agrandir, joueur.Character) end
+end
+
+Players.PlayerAdded:Connect(joueurArrive)
+for _, j in ipairs(Players:GetPlayers()) do joueurArrive(j) end
+</ProtectedString></Properties></Item>
+</roblox>

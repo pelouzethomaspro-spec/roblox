@@ -1,0 +1,494 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Catalogue = require(ReplicatedStorage:WaitForChild("Catalogue"))
+
+
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local PlayerData = require(ServerScriptService:WaitForChild("PlayerData"))
+
+local PlotManager = {}
+
+local plots: {Model} = {}
+
+local maxX = 13 
+local maxZ = 20 
+
+local PlotSpawns = workspace:WaitForChild("PlotSpawns")
+local usedPlots = {}
+
+-- ======================================================================================================================
+-- DEBUG
+-- ======================================================================================================================
+
+local FLECHES = {[0] = "^", [1] = ">", [2] = "v", [3] = "<"}
+
+local function LireID(id)
+	if type(id) ~= "string" then return nil, nil end
+	if string.sub(id, 1, 1) == "C" and string.sub(id, 3, 3) == "_" then
+		return string.sub(id, 4), tonumber(string.sub(id, 2, 2))
+	end
+	return id, nil
+end
+
+function PlotManager.PrintGrid(player: Player, categorie: string, inverserZ: boolean)
+	local grid = PlayerData.GetGrid(player)
+	if not grid then warn("[PrintGrid] pas de grid") return end
+
+	categorie = categorie or "Furniture"
+	local currentX, currentZ = PlayerData.GetPlotSize(player)
+	currentX = currentX or maxX
+	currentZ = currentZ or maxZ
+
+	local numeros, legende, compteur = {}, {}, 0
+	local lignes = {}
+
+	-- entête avec les X
+	local entete = "z\\x  "
+	for x = 1, currentX do
+		entete ..= string.format("%-4s", x)
+	end
+	table.insert(lignes, entete)
+
+	local zDebut, zFin, zPas = 1, currentZ, 1
+	if inverserZ then zDebut, zFin, zPas = currentZ, 1, -1 end
+
+	for z = zDebut, zFin, zPas do
+		local ligne = string.format("%-5s", z)
+		for x = 1, currentX do
+			local case = grid[x] and grid[x][z]
+			local txt = "?"
+			if case then
+				local valeur = case[categorie]
+				if valeur == nil or valeur == 0 then
+					txt = "."
+				elseif categorie == "Furniture" then
+					local id, orient = LireID(case.FurnitureID)
+					local num = "!"
+					if id then
+						if not numeros[id] then
+							compteur += 1
+							numeros[id] = compteur
+							legende[compteur] = valeur
+						end
+						num = numeros[id]
+					end
+					txt = tostring(num) .. (orient and FLECHES[orient] or "")
+				else
+					if not numeros[valeur] then
+						compteur += 1
+						numeros[valeur] = compteur
+						legende[compteur] = valeur
+					end
+					txt = tostring(numeros[valeur])
+				end
+			end
+			ligne ..= string.format("%-4s", txt)
+		end
+		table.insert(lignes, ligne)
+	end
+
+	print(("=== GRID [%s] %s  %dx%d ==="):format(player.Name, categorie, currentX, currentZ))
+	for _, l in ipairs(lignes) do print(l) end
+	for i = 1, compteur do print(("  %d = %s"):format(i, tostring(legende[i]))) end
+end
+
+local function TurnTab(tab)
+	if #tab == 0 or #tab[1] == 0 then return {} end
+
+	local l = #tab
+	local c= #tab[1]
+	local newtab = {}
+	for x = 1, c do
+		newtab[x] = {}
+		for y = 1, l do
+			newtab[x][y] = tab[l - y + 1][x]
+		end
+	end
+	return newtab
+end
+-- ======================================================================================================================
+-- GESTION DU PLACEMENT
+-- ======================================================================================================================
+
+local function Build(item: string, categorie: string, folder : Folder,plotcenter: Model, gridX: number, gridZ: number, orientation: number, furnitureID: string, storeX: number, storeZ: number)
+	local dossier = ReplicatedStorage:FindFirstChild(categorie)
+	local modele = nil 
+	if dossier then modele = dossier:FindFirstChild(item) end
+
+	if modele then
+		local new = modele:Clone()
+
+		local X = (gridX - 0.5) * 10
+		local Z = (gridZ - 0.5) * 10 - 5 
+
+		local plotPivot = plotcenter:GetPivot()
+		local Y = 0
+		
+		if categorie == "Furniture" then
+			Y = 0.616
+		elseif categorie == "Plafond" then
+			Y = 21.516
+		end
+
+		local target = plotPivot * CFrame.new(X, Y, Z) * CFrame.Angles(0, math.rad(orientation * 90), 0)
+		new:PivotTo(target)
+
+		new:SetAttribute("Name", item)
+		new:SetAttribute("X", storeX or gridX)
+		new:SetAttribute("Z", storeZ or gridZ)
+		new:SetAttribute("Orientation", orientation or 0)
+		
+		if categorie == "Mur" then
+			if orientation == 0 or orientation == 2 then 
+				new:SetAttribute("Categorie", "MurNord")
+			else 
+				new:SetAttribute("Categorie", "MurOuest") 
+			end
+		else
+			new:SetAttribute("Categorie", categorie)
+		end
+		
+		if categorie == "Furniture" and furnitureID then
+			new:SetAttribute("FurnitureID", furnitureID)
+		end
+
+		new.Parent = folder
+	end
+end
+
+function PlotManager.Place(player: Player, name: string, categorie: string, orientation: int, targetCF): boolean
+	local spawnfolder = usedPlots[player.UserId]
+	if not spawnfolder then return false end
+	local plotcenter = spawnfolder:FindFirstChild("PlotCenter") 
+	local folder = plots[player.UserId]
+	local grid = PlayerData.GetGrid(player)
+	local currentX, currentZ = PlayerData.GetPlotSize(player)
+	if not (plotcenter and folder and grid and currentX and currentZ) then 
+		return false
+	end
+	
+	local infos = Catalogue.GetInfo(categorie, name)
+	if not infos then return false end
+	local masque = infos.Masque or {{1}}
+	
+	if type(orientation) ~= "number" then return false end
+	orientation = math.floor(orientation) % 4
+	
+	local plotcenterposition = plotcenter:GetPivot()
+	local position = plotcenterposition:PointToObjectSpace(targetCF.Position)
+	local caseAncrageX = math.floor(position.X / 10) + 1
+	local caseAncrageZ = math.floor(position.Z / 10) + 1
+
+	local HttpService = game:GetService("HttpService")
+	local newFurnitureID = HttpService:GenerateGUID(false)
+	local finalX = 0
+	local finalZ = 0
+
+	local HttpService = game:GetService("HttpService")
+	local newFurnitureID = HttpService:GenerateGUID(false)
+
+	local finalX = 0
+	local finalZ = 0
+	
+	if categorie == "Furniture" then 
+		local hauteur = #masque
+		local largeur = #masque[1]
+
+		for i = 1, (4 - orientation) % 4 do
+			masque = TurnTab(masque)
+		end
+
+		local a, b = 1, 1
+		if infos.Pivot == "centre" then
+			-- pivot au centre du masque (stations 3x3) : le meuble tourne sur lui-meme, memes cases quelle que soit
+			-- l'orientation. Le masque a deja ete tourne : on prend le milieu de ses dimensions actuelles.
+			a = math.ceil(#masque[1] / 2)
+			b = math.ceil(#masque / 2)
+		elseif orientation == 1 then
+			a = 1;       b = largeur
+		elseif orientation == 2 then
+			a = largeur; b = hauteur
+		elseif orientation == 3 then
+			a = hauteur; b = 1
+		end
+		
+		for z = 1, #masque do
+			local ligne = masque[z]
+			for x = 1, #ligne do
+				if ligne[x] == 1 then
+					local checkX = caseAncrageX + (x - a)
+					local checkZ = caseAncrageZ + (z - b)
+
+					if checkX < 1 or checkX > currentX or checkZ < 1 or checkZ > currentZ then
+						return false
+					end
+					
+					if grid[checkX][checkZ][categorie] ~= 0 then return false end
+					
+					if grid[checkX][checkZ].Sol == 0 then return false end
+					
+					if x > 1 and ligne[x - 1] == 1 then
+						if grid[checkX - 1] and grid[checkX - 1][checkZ] and grid[checkX - 1][checkZ].MurNord ~= 0 then return false end
+					end
+					if z > 1 and masque[z - 1][x] == 1 then
+						if grid[checkX][checkZ].MurOuest ~= 0 then return false end
+					end
+					
+				end
+			end
+		end
+
+		for z = 1, #masque do
+			local ligne = masque[z]
+			for x = 1, #ligne do
+				if ligne[x] == 1 then
+					local targetX = caseAncrageX + (x - a)
+					local targetZ = caseAncrageZ + (z - b)
+					grid[targetX][targetZ][categorie] = name 
+					if x == a and z == b then
+						grid[targetX][targetZ].FurnitureID = "C" .. orientation .. "_" .. newFurnitureID
+					else
+						grid[targetX][targetZ].FurnitureID = newFurnitureID
+					end
+				end
+			end
+		end
+		finalX = caseAncrageX
+		finalZ = caseAncrageZ
+
+	elseif categorie == "Sol" or categorie == "Plafond" then
+		local checkX = caseAncrageX
+		local checkZ = caseAncrageZ
+		if checkX < 1 or checkX > currentX or checkZ < 1 or checkZ > currentZ then return false end
+		if grid[checkX][checkZ][categorie] ~= 0 then return false end
+
+		finalX = checkX; finalZ = checkZ
+		grid[checkX][checkZ][categorie] = name
+
+	elseif categorie == "Mur" then
+		local caseX = caseAncrageX
+		local caseZ = caseAncrageZ
+
+		if orientation == 2 then
+			caseX = caseX - 1
+		elseif orientation == 3 then
+			caseZ = caseZ + 1
+		end
+
+		local direction = nil
+		if orientation == 0 or orientation == 2 then
+			direction = "MurNord"
+		else
+			direction = "MurOuest"
+		end
+
+		if direction == "MurNord" then
+			if caseX < 1 or caseX > currentX or caseZ < 1 or caseZ > currentZ then return false end
+		else
+			if caseX < 1 or caseX > currentX or caseZ < 1 or caseZ > currentZ + 1 then return false end
+		end
+		
+		if grid[caseX][caseZ][direction] ~= 0 then return false end
+
+		local voisinX = caseX
+		local voisinZ = caseZ
+		if direction == "MurNord" then
+			voisinX = caseX + 1
+		else
+			voisinZ = caseZ - 1
+		end
+
+		local solVoisin = 0
+		if grid[voisinX] and grid[voisinX][voisinZ] then
+			solVoisin = grid[voisinX][voisinZ].Sol
+		end
+		if grid[caseX][caseZ].Sol == 0 and solVoisin == 0 then return false end
+		
+		local idActuel = grid[caseX][caseZ].FurnitureID or 0
+		local idVoisin = 0
+		if grid[voisinX] and grid[voisinX][voisinZ] then
+			idVoisin = grid[voisinX][voisinZ].FurnitureID or 0
+		end
+
+		if type(idActuel) == "string" and type(idVoisin) == "string" then
+			if string.find(idActuel, idVoisin, 1, true) or string.find(idVoisin, idActuel, 1, true) then
+				return false
+			end
+		end
+		finalX = caseX
+		finalZ = caseZ
+		grid[caseX][caseZ][direction] = name
+	end
+	
+	if infos.Type == "Station" then
+		PlayerData.InitStation(player, newFurnitureID,name, infos.Automatic , caseAncrageX, caseAncrageZ, orientation)
+	end
+	
+	if infos.Type == "Caisse" then
+		print("init caisse")
+		PlayerData.InitCaisse(player, newFurnitureID,name, infos.Automatic, caseAncrageX, caseAncrageZ, orientation)
+	end
+	
+	PlotManager.PrintGrid(player, categorie)
+	Build(name, categorie, folder, plotcenter, caseAncrageX, caseAncrageZ, orientation, newFurnitureID, finalX, finalZ)
+	return true
+end
+
+function PlotManager.Destroy(player: Player, item: Model)
+	local plot = plots[player.UserId]
+	local grid = PlayerData.GetGrid(player)
+	if not plot or not item:IsDescendantOf(plot) then
+		return false
+	end
+ 	local categorie = item:GetAttribute("Categorie")
+	local X = item:GetAttribute("X")
+	local Z = item:GetAttribute("Z")
+
+	if not categorie or not X or not Z then return false end
+
+	if categorie == "Sol" or categorie == "Plafond" or categorie == "MurNord" or categorie == "MurOuest" then
+		grid[X][Z][categorie] = 0
+		item:Destroy()
+		return true,item.Name, categorie
+	end
+
+	if categorie == "Furniture" then
+		local targetID = item:GetAttribute("FurnitureID")
+		if not targetID then return false end
+		for x = 1, maxX do
+			for z = 1, maxZ do
+				local currentID = grid[x][z].FurnitureID
+				if currentID ~= 0 and type(currentID) == "string" and string.find(currentID, targetID, 1, true) then
+					grid[x][z].Furniture = 0
+					grid[x][z].FurnitureID = 0
+				end
+			end
+		end
+		
+		local infos = Catalogue.GetInfo("Furniture", item.Name)
+		
+		if infos and infos.Type == "Station" then
+			PlayerData.RemoveStation(player, targetID)
+		end
+		if infos and infos.Type == "Caisse" then
+			PlayerData.RemoveCaisse(player, targetID)
+		end
+		
+		item:Destroy()
+
+		return true
+	end
+	return false
+end
+
+-- ======================================================================================================================
+-- GESTION DES EXTENSIONS
+-- ======================================================================================================================
+
+function PlotManager.BuyExtension(player: Player, axis: string)
+	if axis ~= "X" and axis ~= "Z" then return false end
+
+	local nextX, nextZ = PlayerData.GetNextExtensions(player)
+	local targetExtension = (axis == "X") and nextX or nextZ
+
+	if not targetExtension then
+		return false
+	end
+
+	local Infos = Catalogue.GetInfo("Extension", targetExtension)
+	if not Infos then return false end
+
+	local price = Infos.Prix
+
+	if PlayerData.GetMoney(player) >= price then
+		PlayerData.SpendMoney(player, price)
+		PlayerData.UnlockExtension(player, targetExtension)
+		return true
+	else
+		return false
+	end
+end
+
+-- ======================================================================================================================
+-- GESTION DU PLOT
+-- ======================================================================================================================
+
+function PlotManager.ClaimPlot(player: Player, spawnfolder: Instance): boolean
+	if typeof(spawnfolder) ~= "Instance" then return false end
+	if spawnfolder.Parent ~= PlotSpawns then return false end
+	if usedPlots[player.UserId] then return false end
+
+	if spawnfolder:GetAttribute("OwnerId") ~= nil then return false end
+
+	spawnfolder:SetAttribute("OwnerId", player.UserId)
+	usedPlots[player.UserId] = spawnfolder
+	return true
+end
+
+function PlotManager.SpawnPlot(player: Player): Model
+	local currentX, currentZ = PlayerData.GetPlotSize(player)
+
+	local spawnfolder = usedPlots[player.UserId]
+	if not spawnfolder then
+		return nil
+	end
+	
+	local plotcenter = spawnfolder:FindFirstChild("PlotCenter") 
+	local spawn = spawnfolder:FindFirstChild("PlayerSpawn")
+
+	local folder = Instance.new("Folder")
+	folder.Name = player.Name .. "'s plot"
+	folder.Parent = workspace.Plots
+	plots[player.UserId] = folder
+	local center = Instance.new("ObjectValue")
+	center.Name = "PlotCenterRef"
+	center.Value = plotcenter
+	center.Parent = folder
+
+	local function teleportCharacter(character)
+		task.wait(0.1)
+		character:PivotTo(spawn:GetPivot() * CFrame.new(0, 3, 0))
+	end
+	teleportCharacter(player.Character or player.CharacterAdded:Wait())
+	player.CharacterAdded:Connect(function(newCharacter)
+		if plots[player.UserId] then
+			teleportCharacter(newCharacter)
+		end
+	end)
+
+	local grid = PlayerData.GetGrid(player)
+
+	for x = 1, currentX do
+		for z = 1, currentZ + 1 do
+			if grid[x][z].Furniture ~= 0 then
+				local rawID = grid[x][z].FurnitureID
+				if type(rawID) == "string" and string.sub(rawID, 1, 1) == "C" and string.sub(rawID, 3, 3) == "_" then
+					local orientation = tonumber(string.sub(rawID, 2, 2))
+					local vraiID = string.sub(rawID, 4) 
+					Build(grid[x][z].Furniture, "Furniture", folder, plotcenter, x, z, orientation, vraiID)
+				end
+			end
+			if grid[x][z].Sol ~= 0 then Build(grid[x][z].Sol, "Sol", folder ,plotcenter, x, z, 0) end
+			if grid[x][z].Plafond ~= 0 then Build(grid[x][z].Plafond, "Plafond", folder ,plotcenter, x, z, 0) end
+			if grid[x][z].MurNord ~= 0 then Build(grid[x][z].MurNord, "Mur", folder ,plotcenter, x, z, 0) end
+			if grid[x][z].MurOuest ~= 0 then Build(grid[x][z].MurOuest, "Mur", folder ,plotcenter, x, z, 3) end
+		end
+	end
+	return spawnfolder, folder
+end
+
+function PlotManager.RemovePlot(player: Player)
+	if plots[player.UserId] then
+		plots[player.UserId]:Destroy()
+		plots[player.UserId] = nil
+	end
+	
+	local spawnfolder = usedPlots[player.UserId]
+	if spawnfolder then
+		spawnfolder:SetAttribute("OwnerId", nil)
+		usedPlots[player.UserId] = nil
+	end
+end
+
+return PlotManager

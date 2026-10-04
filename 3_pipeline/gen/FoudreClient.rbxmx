@@ -1,0 +1,8 @@
+<roblox version="4">
+<Item class="LocalScript"><Properties><string name="Name">FoudreClient</string><ProtectedString name="Source">--[[ FoudreClient   (LocalScript, StarterPlayer &gt; StarterPlayerScripts)
+	Effets de foudre chez ce joueur (eclairs, voitures electrifiees). Reglages : ReplicatedStorage &gt; Foudre &gt; Reglages.
+]]
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+require(ReplicatedStorage:WaitForChild("Foudre"):WaitForChild("Effet")).lancer()
+</ProtectedString></Properties></Item>
+</roblox>

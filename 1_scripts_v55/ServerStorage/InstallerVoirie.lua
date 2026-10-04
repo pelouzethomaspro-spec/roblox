@@ -1,0 +1,111 @@
+--[[ InstallerVoirie (ModuleScript, ServerStorage) — remplace la voirie de la map par la version V17e AVEC les
+	entrees/sorties de plots (trottoir abaisse = bateau, traversee en bitume).
+
+	POURQUOI : la map importee dans Studio (MAP_MOTIFS_V17) a des trottoirs plats a 1,27 stud partout ; les dalles
+	abaissees des acces n'y sont pas (les dalles "DalleClaire" y ont 0 stud de hauteur, contre 1,26 dans la V17e).
+	Le fichier 05_Map_complete_FBX_Textures/FBX/02_Voirie_routes_trottoirs_entrees_plots.fbx contient la bonne voirie
+	(196 meshes, meme repere que la map, textures incluses).
+
+	COMMENT FAIRE (dans Studio, place ouverte) :
+	  1. Accueil > Importer 3D > 02_Voirie_routes_trottoirs_entrees_plots.fbx > Importer (garde les reglages par defaut).
+	     Un Model "02_Voirie_routes_trottoirs_entrees_plots" apparait dans Workspace (probablement reduit x0,75 et
+	     tourne : c'est normal, le script corrige).
+	  2. Barre de commande :  require(game.ServerStorage.InstallerVoirie)()
+	  3. Enregistre / publie.
+	Le script remet la voirie importee a l'echelle 1, la tourne et la recale sur deux pieces de reference, recopie les
+	proprietes (ancrage, collisions) de l'ancienne voirie piece par piece, puis remplace l'ancien groupe "Voirie".
+]]
+-- pieces de reference : centre et taille dans le repere de la map (mesures dans le FBX)
+local REF1 = {nom = "Voirie_0_0___Assise", centre = Vector3.new(-1010.482, 0.635, 1018.619), taille = Vector3.new(697.599, 1.27, 681.324)}
+local REF2 = {nom = "Voirie_3_3___Assise", centre = Vector3.new(1010.482, 0.635, -1018.619)}
+local REF3 = {nom = "Voirie_2_2_1__DalleClaire", tailleY = 1.259}     -- dalles avec bateau : hauteur 1,26 (0 dans l'ancienne voirie)
+
+local function trouverMap()
+	for _, enfant in ipairs(workspace:GetChildren()) do
+		if enfant:IsA("Model") or enfant:IsA("Folder") then
+			for _, d in ipairs(enfant:GetDescendants()) do
+				if d:IsA("BasePart") and string.find(d.Name, "Sol_Herbe_0_0", 1, true) then return enfant end
+			end
+		end
+	end
+end
+
+local function trouverImport(map)
+	local sel = game:GetService("Selection"):Get()[1]
+	if sel and sel:IsA("Model") and sel:FindFirstChild(REF1.nom, true) and not sel:IsDescendantOf(map) then return sel end
+	for _, m in ipairs(workspace:GetChildren()) do
+		if m:IsA("Model") and m ~= map and m:FindFirstChild(REF1.nom, true) then return m end
+	end
+end
+
+return function()
+	local map = trouverMap()
+	assert(map, "Map V17 introuvable dans Workspace")
+	local ancien = map:FindFirstChild("Voirie")
+	local nouveau = trouverImport(map)
+	assert(nouveau, "Voirie importee introuvable : Accueil > Importer 3D > 02_Voirie_routes_trottoirs_entrees_plots.fbx, puis relance")
+
+	local r1 = nouveau:FindFirstChild(REF1.nom, true)
+	local r2 = nouveau:FindFirstChild(REF2.nom, true)
+	local r3 = nouveau:FindFirstChild(REF3.nom, true)
+	assert(r1 and r2, "pieces de reference absentes de l'import")
+
+	-- 1) echelle : la piece de reference doit mesurer 697,6 studs de large
+	local k = REF1.taille.X / r1.Size.X
+	if r3 and math.abs(r3.Size.Y * k - REF3.tailleY) > 0.3 then
+		warn("[Voirie] ATTENTION : la voirie importee n'a pas les dalles abaissees (DalleClaire plate) : ce n'est pas le bon FBX (02_Voirie_..._entrees_plots.fbx)")
+	end
+	if math.abs(k - 1) > 0.001 then
+		nouveau:ScaleTo(nouveau:GetScale() * k)
+		print(("[Voirie] echelle corrigee x%.4f"):format(k))
+	end
+
+	-- 2) rotation autour de Y : on aligne le vecteur r1 -> r2 sur le vecteur attendu
+	local v = r2.Position - r1.Position; v = Vector3.new(v.X, 0, v.Z)
+	local e = REF2.centre - REF1.centre; e = Vector3.new(e.X, 0, e.Z)
+	-- l'import ne tourne que par quarts de tour : on essaie les 4 et on garde celui qui aligne le mieux
+	local meilleur, erreurMin = 0, math.huge
+	for q = 0, 3 do
+		local vr = CFrame.Angles(0, q * math.pi / 2, 0):VectorToWorldSpace(v)
+		local err = (vr.Unit - e.Unit).Magnitude
+		if err < erreurMin then meilleur, erreurMin = q, err end
+	end
+	if meilleur ~= 0 then
+		local pivot = nouveau:GetPivot()
+		nouveau:PivotTo(CFrame.new(pivot.Position) * CFrame.Angles(0, meilleur * math.pi / 2, 0) * (pivot - pivot.Position))
+		print(("[Voirie] rotation corrigee de %d degres"):format(meilleur * 90))
+	end
+
+	-- 3) translation : r1 a sa place
+	local delta = REF1.centre - r1.Position
+	nouveau:PivotTo(nouveau:GetPivot() + delta)
+	local ecart = (r2.Position - REF2.centre).Magnitude
+	print(("[Voirie] recalage : decalage applique %s, erreur sur la 2e reference %.3f stud"):format(tostring(delta), ecart))
+	assert(ecart < 2, "recalage incoherent (erreur > 2 studs) : import inattendu, rien n'a ete remplace")
+
+	-- 4) proprietes : recopiees de l'ancienne piece du meme nom (ancrage, collisions, ombres), sinon defauts surs
+	local anciennes = {}
+	if ancien then for _, p in ipairs(ancien:GetDescendants()) do if p:IsA("BasePart") then anciennes[p.Name] = p end end end
+	local n, copiees = 0, 0
+	for _, p in ipairs(nouveau:GetDescendants()) do
+		if p:IsA("BasePart") then
+			n += 1
+			local a = anciennes[p.Name]
+			p.Anchored = true
+			if a then
+				p.CanCollide = a.CanCollide; p.CanQuery = a.CanQuery; p.CanTouch = a.CanTouch; p.CastShadow = a.CastShadow
+				p.Material = a.Material; p.Color = a.Color
+				copiees += 1
+			else
+				p.CanCollide = false; p.CanTouch = false
+			end
+		end
+	end
+
+	-- 5) remplacement
+	if ancien then ancien:Destroy() end
+	nouveau.Name = "Voirie"
+	nouveau.Parent = map
+	print(("[Voirie] OK : %d pieces installees (%d avec les proprietes de l'ancienne voirie). Enregistre / publie la place."):format(n, copiees))
+	return n
+end

@@ -1,0 +1,1260 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Catalogue = require(ReplicatedStorage:WaitForChild("Catalogue"))
+local Demi = require(ReplicatedStorage:WaitForChild("Demi"))          -- v54 : demi-grille (7,5) des petits meubles
+
+
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local PlayerData = require(ServerScriptService:WaitForChild("PlayerData"))
+local UpdateClientData = ReplicatedStorage:WaitForChild("UpdateClientData")
+
+local PlotManager = {}
+
+local plots: {Model} = {}
+
+local maxX = PlayerData.MAX_X or 20
+local maxZ = PlayerData.MAX_Z or 35
+
+-- Hauteurs (repere du plot) : dessus du sol a +0.5, meubles poses a +0.616, toits au sommet des murs (16 studs)
+local Y_MEUBLE = 0.616
+-- v48 : QUADRILLAGE DE 15 STUDS (CASE) ; DEMI = demi-case. Les meshes de 10 studs du pack sont agrandis x1,5 (ECHELLE).
+local CASE = rawget(_G, "CASE_TEST") or 15
+local DEMI = CASE / 2
+local ECHELLE = CASE / 10
+local Y_PLAFOND = 16.5 * 1.5          -- v48 : murs de 16 studs agrandis x1,5
+
+local PlotSpawns = workspace:WaitForChild("PlotSpawns")
+local usedPlots = {}
+
+-- Une case (x, z) couvre, dans le repere du plot, X de (x-1)*10 a x*10 et Z de (z-1)*10 - 5 a z*10 - 5
+-- (les dalles sont centrees sur (x-0.5)*10, (z-1)*10 : voir Build). Ces deux fonctions sont la seule source de verite,
+-- le client (ClientBuild) applique exactement la meme formule.
+local function CaseDePosition(position: Vector3)
+	return math.floor(position.X / CASE) + 1, math.floor((position.Z + DEMI) / CASE) + 1
+end
+
+-- Les sols, toits et murs memorisent leur orientation dans la grille sous la forme "nom#orientation"
+-- (ancien format "nom" = orientation 0) : le meuble se reconstruit exactement comme il a ete pose.
+local function Encoder(nom: string, orientation: number)
+	return nom .. "#" .. tostring(orientation or 0)
+end
+local function Decoder(valeur)
+	if type(valeur) ~= "string" then return nil, 0 end
+	local nom, o = string.match(valeur, "^(.-)#(%d)$")
+	if nom then return nom, tonumber(o) end
+	return valeur, 0
+end
+
+-- ======================================================================================================================
+-- ZONES : grille principale (0, 0) et annexe 3 x 3 de l'autre cote de la route (Part "Annexe" du PlotSpawn)
+-- ======================================================================================================================
+-- Une zone = {grid, nx, nz, decalage} : la case (x, z) est centree, dans le repere du plot, sur
+-- decalage + ((x-0.5)*10, y, (z-0.5)*10 - 5). Le Part "Annexe" (30 x 30, meme orientation que PlotCenter) donne la
+-- position de l'annexe : coin bas = son centre - 15.
+local function DecalageAnnexe(spawnfolder, plotcenter)
+	local annexe = spawnfolder:FindFirstChild("Annexe")
+	if not (annexe and annexe:IsA("BasePart")) then return nil end
+	local c = plotcenter:GetPivot():PointToObjectSpace(annexe.Position)
+	return Vector3.new(c.X - annexe.Size.X / 2, 0, c.Z - annexe.Size.Z / 2 + DEMI)
+end
+
+-- ======================================================================================================================
+-- TERRAIN SOUS LE PLOT : la map est en Terrain Grass (brins d'herbe animes) partout, y compris sous les plots. Sous
+-- chaque case ou le joueur pose un SOL, on met du Terrain Ground (plat, meme vert) : les brins ne traversent pas les dalles.
+-- Une case rendue a l'herbe repasse en Grass. (Les meubles ne se posent que sur un sol, les murs le long d'un sol.)
+-- Le dessus nominal de la nappe est a Y = -2 (Roblox dessine la surface ~2 studs plus haut) : voir InstallerMap (Y_T).
+-- ======================================================================================================================
+local Terrain = workspace.Terrain
+-- v48 : les modeles du pack (dalles 10 x 10, murs de 10, stations 3 x 3 = 30) sont agrandis x1,5 une fois pour toutes
+-- au demarrage du serveur, dans ReplicatedStorage (le client les clone ensuite deja a l'echelle). Idempotent (attribut).
+do
+	local n = 0
+	for _, nomDossier in ipairs({"Sol", "Mur", "Plafond", "Furniture"}) do
+		local dossier = ReplicatedStorage:FindFirstChild(nomDossier)
+		if dossier then
+			for _, m in ipairs(dossier:GetChildren()) do
+				if m:IsA("Model") and m:GetAttribute("EchelleCase") ~= CASE then
+					local ok = pcall(function() m:ScaleTo(m:GetScale() * ECHELLE / ((m:GetAttribute("EchelleCase") or 10) / 10)) end)
+					if ok then m:SetAttribute("EchelleCase", CASE); n += 1 end
+				end
+			end
+		end
+	end
+	if n > 0 then print(("[Plot] %d modeles de construction remis a l'echelle de la case (%d studs)"):format(n, CASE)) end
+end
+-- v47 : l'herbe rase (LeafyGrass, sans brins) prend exactement la couleur de l'herbe en relief : seule la hauteur change
+pcall(function() Terrain:SetMaterialColor(Enum.Material.LeafyGrass, Terrain:GetMaterialColor(Enum.Material.Grass)) end)
+local Y_NAPPE = -2                      -- dessus nominal de la nappe d'herbe (InstallerMap : -4 + Y_T)
+-- les tabliers de bitume des acces (Parts "*_Tablier" du PlotSpawn : v51, crees par Acces dans les modeles AccesEntree /
+-- AccesSortie, deplacables) restent toujours sans brins
+local function SousTablier(plotcenter, position)
+	local spawnfolder = plotcenter.Parent
+	if not spawnfolder then return false end
+	for _, t in ipairs(spawnfolder:GetDescendants()) do
+		if t:IsA("BasePart") and string.find(t.Name, "_Tablier", 1, true) then
+			local l = t.CFrame:PointToObjectSpace(position)
+			if math.abs(l.X) <= t.Size.X / 2 + 3 and math.abs(l.Z) <= t.Size.Z / 2 + 3 then return true end
+		end
+	end
+	return false
+end
+local function CentreCase(plotcenter, zone, x, z)
+	local decalage = (zone and zone.decalage) or Vector3.zero
+	return plotcenter:GetPivot() * CFrame.new(decalage) * CFrame.new((x - 0.5) * CASE, 0, (z - 0.5) * CASE - DEMI)
+end
+-- v47 / v49 : TROIS ETATS de terrain, pour que les brins d'herbe n'entrent jamais dans les sols poses :
+--   * Ground     : sous un sol pose (et sous les tabliers d'acces) ;
+--   * LeafyGrass : herbe RASE (meme couleur, sans brins) sur une BANDE DE 5 STUDS autour de chaque sol (v51 : 5 studs,
+--                  demande de Thomas ; les voxels font 4 studs, la bande fait donc 4 a 8 studs) ;
+--   * Grass      : herbe en relief (brins) partout ailleurs.
+-- Les voxels font 4 studs : on remplit toujours dans l'ordre Grass -> LeafyGrass -> Ground pour que le plus "dur" gagne.
+-- v49 : les CASES INTERDITES (la courbe de la route du tour mord le coin du plot : StringValue "CasesInterdites" du PlotSpawn,
+-- "x,z;x,z") ne sont jamais remplies (le trottoir et la chaussee de la map passent dessus) et rien ne s'y pose.
+local MATERIAU = {herbe = Enum.Material.Grass, rase = Enum.Material.LeafyGrass, sol = Enum.Material.Ground}
+local BANDE_RASE = 5                     -- v51 : 5 studs (Thomas : 3 ne suffisait pas)
+local function Remplir(cf, taille, etat, tailleZ)
+	local p = cf.Position
+	local rot = cf - p
+	local mat = (etat == true and MATERIAU.sol) or (etat == "rase" and MATERIAU.rase) or (MATERIAU[etat] or MATERIAU.herbe)
+	pcall(function()
+		Terrain:FillBlock(CFrame.new(p.X, Y_NAPPE - 2.05, p.Z) * rot, Vector3.new(taille, 4.2, tailleZ or taille), mat)
+	end)
+end
+-- v51 : aux BORDS du plot (colonne 1 / nx, rangee 1 / derniere), l'herbe deborde de DEBORD studs sous le trottoir de la map :
+-- les voxels font 4 studs, sans ce debord le dernier voxel est a moitie plein et dessine une pente nue de 4 studs entre
+-- l'herbe et la bordure (meme regle que InstallerHerbe).
+local DEBORD = 4
+-- v55 : le debord vaut pour TOUS les etats (herbe, rase, sol) : sans lui, le dernier voxel (4 studs) sous une dalle de
+-- bord restait a moitie en herbe et des brins poussaient entre la dalle et la bordure du trottoir de la map.
+local function RemplirCase(cf, etat, zone, x, z)
+	if not (zone and x and z) then Remplir(cf, CASE, etat) return end
+	local ex0, ex1 = (x == 1) and DEBORD or 0, (x == zone.nx) and DEBORD or 0
+	local ez0, ez1 = (z == 1) and DEBORD or 0, (z >= zone.nz + 1) and DEBORD or 0
+	if ex0 + ex1 + ez0 + ez1 == 0 then Remplir(cf, CASE, etat) return end
+	Remplir(cf * CFrame.new((ex1 - ex0) / 2, 0, (ez1 - ez0) / 2), CASE + ex0 + ex1, etat, CASE + ez0 + ez1)
+end
+
+-- cases interdites du plot (lues une fois par PlotSpawn)
+local interditesParSpawn = {}
+local function Interdites(plotcenter)
+	local spawnfolder = plotcenter and plotcenter.Parent
+	if not spawnfolder then return nil end
+	local t = interditesParSpawn[spawnfolder]
+	if t then return t end
+	t = {}
+	local sv = spawnfolder:FindFirstChild("CasesInterdites")
+	if sv and sv:IsA("StringValue") then
+		for cx, cz in string.gmatch(sv.Value, "(%d+),(%d+)") do t[tonumber(cx) .. "_" .. tonumber(cz)] = true end
+	end
+	interditesParSpawn[spawnfolder] = t
+	return t
+end
+local function CaseInterdite(plotcenter, zone, x, z)
+	if zone and zone.nom ~= nil then return false end          -- annexe : jamais
+	local t = Interdites(plotcenter)
+	return t ~= nil and t[x .. "_" .. z] == true
+end
+PlotManager.CaseInterdite = function(plotcenter, x, z) return CaseInterdite(plotcenter, nil, x, z) end
+
+local function CaseOccupee(plotcenter, zone, x, z)
+	if x < 1 or z < 1 or x > zone.nx or z > zone.nz + 1 then return false end
+	local c = zone.grid[x] and zone.grid[x][z]
+	if c and c.Sol ~= nil and c.Sol ~= 0 then return true end
+	return SousTablier(plotcenter, CentreCase(plotcenter, zone, x, z).Position)
+end
+local function DansZone(zone, x, z) return x >= 1 and z >= 1 and x <= zone.nx and z <= zone.nz + 1 end
+-- refait le terrain autour d'une case (ses 5 x 5 voisines) : herbe sur les cases libres du 3 x 3, bande rase autour de
+-- chaque case occupee du 5 x 5, puis Ground sous chaque case occupee du 5 x 5 (les voxels de 4 debordent d'une case sur l'autre)
+local function TerrainCase(plotcenter, zone, x, z)
+	local occupees = {}
+	for dx = -2, 2 do
+		for dz = -2, 2 do
+			local vx, vz = x + dx, z + dz
+			if DansZone(zone, vx, vz) and not CaseInterdite(plotcenter, zone, vx, vz) then
+				local occ = CaseOccupee(plotcenter, zone, vx, vz)
+				if occ then table.insert(occupees, {vx, vz})
+				elseif math.abs(dx) <= 1 and math.abs(dz) <= 1 then RemplirCase(CentreCase(plotcenter, zone, vx, vz), "herbe", zone, vx, vz) end
+			end
+		end
+	end
+	for _, c in ipairs(occupees) do Remplir(CentreCase(plotcenter, zone, c[1], c[2]), CASE + 2 * BANDE_RASE, "rase") end
+	for _, c in ipairs(occupees) do RemplirCase(CentreCase(plotcenter, zone, c[1], c[2]), true) end
+end
+-- toutes les cases de la zone : herbe partout (sauf cases interdites), puis bande rase autour des sols, puis Ground sous
+-- les sols et tabliers
+local function TerrainZone(plotcenter, zone, toutHerbe)
+	if not zone then return end
+	local occupees = {}
+	for x = 1, zone.nx do
+		for z = 1, zone.nz + 1 do
+			if not CaseInterdite(plotcenter, zone, x, z) then
+				if (not toutHerbe) and CaseOccupee(plotcenter, zone, x, z) then table.insert(occupees, {x, z})
+				else RemplirCase(CentreCase(plotcenter, zone, x, z), "herbe", zone, x, z) end
+			end
+		end
+	end
+	for _, c in ipairs(occupees) do Remplir(CentreCase(plotcenter, zone, c[1], c[2]), CASE + 2 * BANDE_RASE, "rase") end
+	for _, c in ipairs(occupees) do RemplirCase(CentreCase(plotcenter, zone, c[1], c[2]), true) end
+end
+
+-- ======================================================================================================================
+-- BORDURES DE TROTTOIR (v42) : chaque cote d'une dalle de goudron qui touche l'herbe recoit automatiquement un bout de
+-- trottoir (dallage clair + bordure grise) pose sur le bord de la dalle, cote herbe, 0,7 stud au-dessus du bitume comme
+-- les trottoirs de la map (chaussee 0,57 / trottoir 1,27). Quand on pose une dalle a cote, le cote commun perd sa
+-- bordure (la dalle redevient "full bitume" de ce cote) ; quand on enleve ou deplace une dalle, ses voisines retrouvent
+-- la leur. Les bordures sont des Parts enfants de la dalle (dossier "Bordures") : elles suivent la dalle partout.
+-- ======================================================================================================================
+local SOLS_GOUDRON = {sol_goudron = true, sol_route = true, sol_beton = true}       -- memes sols que Circulation.SOLS_ROULANTS
+local BORDURE = {
+	largeur = 2.5, hauteur = 0.7, bord = 0.45,
+	couleurDalle = Color3.fromRGB(203, 198, 184), couleurBord = Color3.fromRGB(148, 148, 144),
+	materiau = Enum.Material.Concrete,
+}
+local COTES = {{dx = 1, dz = 0}, {dx = -1, dz = 0}, {dx = 0, dz = 1}, {dx = 0, dz = -1}}
+
+local function NomSol(valeur)
+	if type(valeur) ~= "string" then return nil end
+	return (string.gsub(valeur, "#.*$", ""))
+end
+local function EstGoudron(zone, x, z)
+	local c = zone.grid[x] and zone.grid[x][z]
+	local n = c and NomSol(c.Sol)
+	return n ~= nil and SOLS_GOUDRON[n] == true
+end
+-- bordure sur ce cote ? oui si la case voisine est dans la zone et sans aucun sol (herbe). Hors de la zone (bord du
+-- plot : trottoirs et acces de la map) et contre un autre sol (goudron, carrelage...) : pas de bordure.
+local function CoteHerbe(zone, x, z, dx, dz)
+	local vx, vz = x + dx, z + dz
+	if vx < 1 or vx > zone.nx or vz < 1 or vz > zone.nz + 1 then return false end
+	local c = zone.grid[vx] and zone.grid[vx][vz]
+	return c ~= nil and (c.Sol == 0 or c.Sol == nil)
+end
+local function CleSol(zoneNom, x, z) return tostring(zoneNom or "") .. "|" .. x .. "|" .. z end
+-- index "zone|x|z" -> modele de dalle, pour ne parcourir le dossier qu'une fois
+local function IndexSols(folder)
+	local index = {}
+	for _, m in ipairs(folder:GetChildren()) do
+		if m:IsA("Model") and m:GetAttribute("Categorie") == "Sol" then
+			index[CleSol(m:GetAttribute("Zone"), m:GetAttribute("X"), m:GetAttribute("Z"))] = m
+		end
+	end
+	return index
+end
+-- v55 (Thomas) : la bordure du goudron du joueur est la MEME que celle des trottoirs de la map : on clone la piece
+-- "Trottoir_PlotN_kk__Bordure" (MeshPart de 15 studs, 2 de large, 1,43 de haut, texture de la map) et on la pose sur le
+-- bord de la dalle, face chaussee vers le goudron, dos vers l'herbe. Plus de dallage de 2,5 : juste l'arete.
+local bordureTemplate = nil          -- false = pas de map avec segments (on retombe sur les Parts simples)
+local function TemplateBordure()
+	if bordureTemplate ~= nil then return bordureTemplate or nil end
+	local trouve = nil
+	for _, d in ipairs(workspace:GetDescendants()) do
+		if d:IsA("MeshPart") and string.match(d.Name, "^Trottoir_Plot%d+_%d+__Bordure$") then trouve = d break end
+	end
+	if not trouve then bordureTemplate = false return nil end
+	local seg = trouve.Parent
+	local dalle = seg and seg:FindFirstChild((string.gsub(trouve.Name, "__Bordure$", "__DalleClaire")))
+	local versDalle = dalle and (dalle.Position - trouve.Position) or Vector3.zero
+	local l = trouve.CFrame:VectorToObjectSpace(versDalle)
+	local sz = trouve.Size
+	-- axe long local (15 studs) et axe perpendiculaire horizontal (vers la dalle)
+	local u, w
+	if sz.Z >= sz.X then u = Vector3.new(0, 0, 1); w = Vector3.new(l.X >= 0 and 1 or -1, 0, 0)
+	else u = Vector3.new(1, 0, 0); w = Vector3.new(0, 0, l.Z >= 0 and 1 or -1) end
+	if versDalle.Magnitude < 0.1 then w = (sz.Z >= sz.X) and Vector3.new(1, 0, 0) or Vector3.new(0, 0, 1) end
+	local c = trouve:Clone()
+	for _, e in ipairs(c:GetChildren()) do if not (e:IsA("SurfaceAppearance") or e:IsA("Texture") or e:IsA("Decal")) then e:Destroy() end end
+	c.Name = "Bordure"; c.Anchored = true; c.CanCollide = false; c.CanQuery = false; c.CanTouch = false; c.CastShadow = true
+	c.Transparency = 0
+	for _, a in ipairs({"AccesCache", "AccesCollide"}) do c:SetAttribute(a, nil) end
+	bordureTemplate = { piece = c, u = u, w = w, largeur = (sz.Z >= sz.X) and sz.X or sz.Z, hauteur = sz.Y, longueur = math.max(sz.X, sz.Z) }
+	return bordureTemplate
+end
+
+local function MajBordures(folder, plotcenter, zone, x, z, index)
+	if x < 1 or x > zone.nx or z < 1 or z > zone.nz + 1 then return end
+	index = index or IndexSols(folder)
+	local tuile = index[CleSol(zone.nom, x, z)]
+	if not tuile then return end
+	local anciennes = tuile:FindFirstChild("Bordures")
+	if anciennes then anciennes:Destroy() end
+	if not EstGoudron(zone, x, z) then return end
+	local bcf, taille = tuile:GetBoundingBox()
+	local dessus = bcf.Position.Y + taille.Y / 2                 -- dessus de la dalle
+	local cf = CentreCase(plotcenter, zone, x, z)
+	local rot = cf - cf.Position
+	local ha = BORDURE.hauteur
+	local base = CFrame.new(cf.Position.X, dessus - 0.05 + ha / 2, cf.Position.Z) * rot
+	local dossier = nil
+	local T = TemplateBordure()
+	if T then
+		-- bordure de la map : le long de chaque cote qui touche l'herbe, dos (cote dalle du modele) vers l'herbe
+		local HAUT_ROUTE = 0.57                                   -- la chaussee de la map est a 0,57 au-dessus du bas de la bordure
+		for _, c in ipairs(COTES) do
+			if CoteHerbe(zone, x, z, c.dx, c.dz) then
+				if not dossier then dossier = Instance.new("Folder"); dossier.Name = "Bordures"; dossier.Parent = tuile end
+				local dehors = Vector3.new(c.dx, 0, c.dz)                 -- repere du plot, vers l'herbe
+				local leLong = Vector3.new(-c.dz, 0, c.dx)
+				local A = CFrame.fromMatrix(Vector3.zero, T.u, Vector3.yAxis, T.w)
+				local B = CFrame.fromMatrix(Vector3.zero, leLong, Vector3.yAxis, dehors)
+				local R = B * A:Inverse()
+				local centreLocal = dehors * (DEMI - T.largeur / 2)
+				local centre = cf * CFrame.new(centreLocal.X, 0, centreLocal.Z)
+				local p = T.piece:Clone()
+				p.CFrame = CFrame.new(centre.Position.X, dessus - HAUT_ROUTE + T.hauteur / 2, centre.Position.Z) * rot * R
+				p.Parent = dossier
+				-- collision : la partie qui depasse du goudron
+				local col = Instance.new("Part"); col.Name = "BordureCollision"; col.Transparency = 1; col.Anchored = true
+				col.CanCollide = true; col.CanQuery = false; col.CanTouch = false; col.CastShadow = false
+				local saillie = T.hauteur - HAUT_ROUTE
+				col.Size = (c.dx ~= 0) and Vector3.new(T.largeur, saillie, CASE) or Vector3.new(CASE, saillie, T.largeur)
+				col.CFrame = CFrame.new(centre.Position.X, dessus + saillie / 2, centre.Position.Z) * rot
+				col.Parent = dossier
+			end
+		end
+		return
+	end
+	local function piece(nom, tailleP, centreLocal, couleur)
+		local p = Instance.new("Part")
+		p.Name = nom
+		p.Anchored = true; p.CanCollide = true; p.CanQuery = true; p.CanTouch = false; p.CastShadow = true
+		p.Material = BORDURE.materiau; p.Color = couleur
+		p.TopSurface = Enum.SurfaceType.Smooth; p.BottomSurface = Enum.SurfaceType.Smooth
+		p.Size = tailleP
+		p.CFrame = base * CFrame.new(centreLocal)
+		p.Parent = dossier
+	end
+	for _, c in ipairs(COTES) do
+		if CoteHerbe(zone, x, z, c.dx, c.dz) then
+			if not dossier then dossier = Instance.new("Folder"); dossier.Name = "Bordures"; dossier.Parent = tuile end
+			local le, bo = BORDURE.largeur, BORDURE.bord
+			local leDalle = le - bo
+			if c.dx ~= 0 then
+				piece("Trottoir", Vector3.new(leDalle, ha, CASE), Vector3.new(c.dx * (DEMI - leDalle / 2), 0, 0), BORDURE.couleurDalle)
+				piece("Bordure", Vector3.new(bo, ha, CASE), Vector3.new(c.dx * (DEMI - leDalle - bo / 2), 0, 0), BORDURE.couleurBord)
+			else
+				piece("Trottoir", Vector3.new(CASE, ha, leDalle), Vector3.new(0, 0, c.dz * (DEMI - leDalle / 2)), BORDURE.couleurDalle)
+				piece("Bordure", Vector3.new(CASE, ha, bo), Vector3.new(0, 0, c.dz * (DEMI - leDalle - bo / 2)), BORDURE.couleurBord)
+			end
+		end
+	end
+end
+-- la case et ses 4 voisines (apres une pose, une suppression ou un deplacement de dalle)
+-- v54 : acces implicites (Acces) : un changement de sol sur une case de BORD (colonne cote branche, rangee 1) ouvre ou
+-- referme le trottoir devant elle. Acces requiert PlotManager paresseusement : pas de cycle.
+local AccesModule = nil
+local function MajAcces(player, zone, x, z)
+	if zone and zone.nom == "Annexe" then return end
+	if AccesModule == nil then
+		local ok, m = pcall(function() return require(ServerScriptService:WaitForChild("Acces", 10)) end)
+		AccesModule = ok and m or false
+	end
+	if not AccesModule then return end
+	local sf = usedPlots[player.UserId]
+	if sf then task.defer(AccesModule.Rafraichir, player, sf, x, z) end
+end
+
+local function MajBorduresAutour(folder, plotcenter, zone, x, z)
+	if not (folder and plotcenter and zone) then return end
+	local index = IndexSols(folder)
+	MajBordures(folder, plotcenter, zone, x, z, index)
+	for _, c in ipairs(COTES) do MajBordures(folder, plotcenter, zone, x + c.dx, z + c.dz, index) end
+end
+-- toute une zone (reconstruction du plot, apercu)
+local function BorduresZone(folder, plotcenter, zone)
+	if not (folder and plotcenter and zone) then return end
+	local index = IndexSols(folder)
+	for x = 1, zone.nx do
+		for z = 1, zone.nz + 1 do
+			if EstGoudron(zone, x, z) then MajBordures(folder, plotcenter, zone, x, z, index) end
+		end
+	end
+end
+
+local function ZonePrincipale(player)
+	local currentX, currentZ = PlayerData.GetPlotSize(player)
+	local grid = PlayerData.GetGrid(player)
+	if not (grid and currentX and currentZ) then return nil end
+	return {grid = grid, nx = currentX, nz = currentZ, decalage = Vector3.zero, nom = nil, demi = PlayerData.GetDemi(player, false)}
+end
+
+-- v51 : PlotSpawn du joueur (pour Acces)
+function PlotManager.SpawnFolderDe(player)
+	return usedPlots[player.UserId]
+end
+-- v51 : refait le terrain autour d'une liste de cases {x, z} de la grille principale (deplacement d'un acces)
+function PlotManager.RefaireTerrainCases(player, cases)
+	local spawnfolder = usedPlots[player.UserId]
+	local plotcenter = spawnfolder and spawnfolder:FindFirstChild("PlotCenter")
+	local zone = ZonePrincipale(player)
+	if not (plotcenter and zone) then return end
+	for _, c in ipairs(cases) do TerrainCase(plotcenter, zone, c[1], c[2]) end
+end
+
+local function ZoneAnnexe(player, spawnfolder, plotcenter)
+	local decalage = DecalageAnnexe(spawnfolder, plotcenter)
+	local grid = PlayerData.GetAnnexe and PlayerData.GetAnnexe(player)
+	if not (decalage and grid) then return nil end
+	return {grid = grid, nx = PlayerData.ANNEXE_X, nz = PlayerData.ANNEXE_Z, decalage = decalage, nom = "Annexe", demi = PlayerData.GetDemi(player, true)}
+end
+
+-- zone contenant une position (repere du plot) : l'annexe si la position tombe dans son rectangle, sinon la principale
+local function ZoneDePosition(player, spawnfolder, plotcenter, position)
+	local annexe = ZoneAnnexe(player, spawnfolder, plotcenter)
+	if annexe then
+		local d = annexe.decalage
+		if position.X >= d.X and position.X < d.X + annexe.nx * CASE and position.Z >= d.Z - DEMI and position.Z < d.Z - DEMI + annexe.nz * CASE then
+			return annexe
+		end
+	end
+	return ZonePrincipale(player)
+end
+
+-- ======================================================================================================================
+-- DEBUG
+-- ======================================================================================================================
+
+local FLECHES = {[0] = "^", [1] = ">", [2] = "v", [3] = "<"}
+
+local function LireID(id)
+	if type(id) ~= "string" then return nil, nil end
+	if string.sub(id, 1, 1) == "C" and string.sub(id, 3, 3) == "_" then
+		return string.sub(id, 4), tonumber(string.sub(id, 2, 2))
+	end
+	return id, nil
+end
+
+function PlotManager.PrintGrid(player: Player, categorie: string, inverserZ: boolean)
+	local grid = PlayerData.GetGrid(player)
+	if not grid then warn("[PrintGrid] pas de grid") return end
+
+	categorie = categorie or "Furniture"
+	local currentX, currentZ = PlayerData.GetPlotSize(player)
+	currentX = currentX or maxX
+	currentZ = currentZ or maxZ
+
+	local numeros, legende, compteur = {}, {}, 0
+	local lignes = {}
+
+	-- entête avec les X
+	local entete = "z\\x  "
+	for x = 1, currentX do
+		entete ..= string.format("%-4s", x)
+	end
+	table.insert(lignes, entete)
+
+	local zDebut, zFin, zPas = 1, currentZ, 1
+	if inverserZ then zDebut, zFin, zPas = currentZ, 1, -1 end
+
+	for z = zDebut, zFin, zPas do
+		local ligne = string.format("%-5s", z)
+		for x = 1, currentX do
+			local case = grid[x] and grid[x][z]
+			local txt = "?"
+			if case then
+				local valeur = case[categorie]
+				if valeur == nil or valeur == 0 then
+					txt = "."
+				elseif categorie == "Furniture" then
+					local id, orient = LireID(case.FurnitureID)
+					local num = "!"
+					if id then
+						if not numeros[id] then
+							compteur += 1
+							numeros[id] = compteur
+							legende[compteur] = valeur
+						end
+						num = numeros[id]
+					end
+					txt = tostring(num) .. (orient and FLECHES[orient] or "")
+				else
+					local nom, o = Decoder(valeur)
+					if not numeros[nom] then
+						compteur += 1
+						numeros[nom] = compteur
+						legende[compteur] = nom
+					end
+					txt = tostring(numeros[nom]) .. (FLECHES[o] or "")
+				end
+			end
+			ligne ..= string.format("%-4s", txt)
+		end
+		table.insert(lignes, ligne)
+	end
+
+	print(("=== GRID [%s] %s  %dx%d ==="):format(player.Name, categorie, currentX, currentZ))
+	for _, l in ipairs(lignes) do print(l) end
+	for i = 1, compteur do print(("  %d = %s"):format(i, tostring(legende[i]))) end
+end
+
+local function TurnTab(tab)
+	if #tab == 0 or #tab[1] == 0 then return {} end
+
+	local l = #tab
+	local c= #tab[1]
+	local newtab = {}
+	for x = 1, c do
+		newtab[x] = {}
+		for y = 1, l do
+			newtab[x][y] = tab[l - y + 1][x]
+		end
+	end
+	return newtab
+end
+-- ======================================================================================================================
+-- GESTION DU PLACEMENT
+-- ======================================================================================================================
+
+local function Build(item: string, categorie: string, folder : Folder,plotcenter: Model, gridX: number, gridZ: number, orientation: number, furnitureID: string, storeX: number, storeZ: number, zone)
+	local dossier = ReplicatedStorage:FindFirstChild(categorie)
+	local modele = nil 
+	if dossier then modele = dossier:FindFirstChild(item) end
+
+	if modele then
+		local new = modele:Clone()
+
+		local X = (gridX - 0.5) * CASE
+		local Z = (gridZ - 0.5) * CASE - DEMI
+		-- v54 : petit meuble de la demi-grille : gridX / gridZ sont des demi-cases, le modele est etire a son masque
+		local infos = Catalogue.GetInfo(categorie, item)
+		local demi = categorie == "Furniture" and Demi.Est(infos)
+		if demi then
+			X, Z = Demi.Centre(gridX, gridZ)
+			Demi.Ajuster(new, infos)
+		end
+
+		local plotPivot = plotcenter:GetPivot()
+		local Y = 0
+
+		if categorie == "Furniture" then
+			Y = Y_MEUBLE
+		elseif categorie == "Plafond" then
+			Y = Y_PLAFOND
+		end
+
+		local decalage = (zone and zone.decalage) or Vector3.zero
+		local target = plotPivot * CFrame.new(decalage) * CFrame.new(X, Y, Z) * CFrame.Angles(0, math.rad(orientation * 90), 0)
+		new:PivotTo(target)
+		-- v47 : le dessus des dalles est au niveau de la chaussee (0,57) ; on epaissit la dalle vers le bas pour qu'elle
+		-- repose dans le terrain (pas de jour visible sous le bord de la dalle cote herbe)
+		if categorie == "Sol" then
+			for _, q in ipairs(new:GetDescendants()) do
+				if q:IsA("BasePart") and q.Size.Y < 1.5 then
+					q.Size = Vector3.new(q.Size.X, q.Size.Y + 0.4, q.Size.Z); q.CFrame = q.CFrame * CFrame.new(0, -0.2, 0)
+				end
+			end
+		end
+		if zone and zone.nom then new:SetAttribute("Zone", zone.nom) end
+
+		new:SetAttribute("Name", item)
+		new:SetAttribute("X", storeX or gridX)
+		new:SetAttribute("Z", storeZ or gridZ)
+		new:SetAttribute("Orientation", orientation or 0)
+		if demi then new:SetAttribute("Demi", true) end
+		
+		if categorie == "Mur" then
+			if orientation == 0 or orientation == 2 then 
+				new:SetAttribute("Categorie", "MurNord")
+			else 
+				new:SetAttribute("Categorie", "MurOuest") 
+			end
+		else
+			new:SetAttribute("Categorie", categorie)
+		end
+		
+		if categorie == "Furniture" and furnitureID then
+			new:SetAttribute("FurnitureID", furnitureID)
+		end
+
+		new.Parent = folder
+	end
+end
+
+-- options (facultatif) : {deplacement = Model} = on ne construit pas un objet neuf, on deplace cet objet deja pose :
+-- meme FurnitureID, pas de paiement, pas d'InitStation ; ses anciennes cases ont ete liberees par l'appelant (Deplacer).
+function PlotManager.Place(player: Player, name: string, categorie: string, orientation: int, targetCF, options): boolean
+	local deplace = options and options.deplacement
+	local spawnfolder = usedPlots[player.UserId]
+	if not spawnfolder then return false end
+	local plotcenter = spawnfolder:FindFirstChild("PlotCenter") 
+	local folder = plots[player.UserId]
+	if not (plotcenter and folder) then return false end
+	
+	local infos = Catalogue.GetInfo(categorie, name)
+	if not infos then return false end
+	local masque = infos.Masque or {{1}}
+	
+	if type(orientation) ~= "number" then return false end
+	orientation = math.floor(orientation) % 4
+	
+	if typeof(targetCF) ~= "CFrame" then return false end
+	local plotcenterposition = plotcenter:GetPivot()
+	local position = plotcenterposition:PointToObjectSpace(targetCF.Position)
+	if position.X ~= position.X or position.Z ~= position.Z or math.abs(position.X) > 1e6 or math.abs(position.Z) > 1e6 then return false end
+
+	-- zone visee (grille principale ou annexe) : la suite raisonne dans les cases de cette zone
+	local zone = ZoneDePosition(player, spawnfolder, plotcenter, position)
+	if not zone then return false end
+	local grid, currentX, currentZ = zone.grid, zone.nx, zone.nz
+	if zone.nom == "Annexe" and (infos.Type == "Station" or infos.Type == "Caisse") then
+		return false            -- l'annexe (en face de la route) : decor, sols, murs, panneaux ; pas de station ni de caisse
+	end
+	position = position - zone.decalage
+	local caseAncrageX, caseAncrageZ = CaseDePosition(position)
+
+	local HttpService = game:GetService("HttpService")
+	local newFurnitureID = HttpService:GenerateGUID(false)
+	if deplace then newFurnitureID = deplace:GetAttribute("FurnitureID") or newFurnitureID end
+
+	local finalX = 0
+	local finalZ = 0
+	local demiInfos = nil                 -- v54 : {CX, CZ, DX, DZ} d'un meuble de la demi-grille (caisses)
+	
+	if categorie == "Furniture" and Demi.Est(infos) then
+		-- ---------------------------------------------------------------- v54 : DEMI-GRILLE (7,5 studs)
+		local dict = zone.demi
+		if not dict then return false end
+		local hx, hz = Demi.CaseDe(position)
+		local cases, dx, dz = Demi.Cases(masque, orientation, hx, hz)
+		local idDemi = newFurnitureID
+		for _, h in ipairs(cases) do
+			local cx, cz = Demi.CaseMere(h[1], h[2])
+			if h[1] < 1 or h[2] < 1 or cx > currentX or cz > currentZ then return false end
+			if CaseInterdite(plotcenter, zone, cx, cz) then return false end
+			local case = grid[cx][cz]
+			if case.Sol == 0 then return false end                                   -- un sol dessous
+			if case.Furniture ~= 0 and case.Furniture ~= nil then return false end  -- pas sur une station
+			local occ = dict[Demi.Cle(h[1], h[2])]
+			if occ and not (deplace and type(occ.FurnitureID) == "string" and string.find(occ.FurnitureID, idDemi, 1, true)) then return false end
+		end
+		-- murs : pas de mur entre deux demi-cases du meuble situees dans deux cases differentes
+		for _, h in ipairs(cases) do
+			for _, h2 in ipairs(cases) do
+				if h2[1] == h[1] + 1 and h2[2] == h[2] then
+					local cx, cz = Demi.CaseMere(h[1], h[2]); local cx2 = Demi.CaseMere(h2[1], h2[2])
+					if cx2 ~= cx and grid[cx][cz].MurNord ~= 0 then return false end
+				elseif h2[1] == h[1] and h2[2] == h[2] + 1 then
+					local cx, cz = Demi.CaseMere(h[1], h[2]); local _, cz2 = Demi.CaseMere(h2[1], h2[2])
+					if cz2 ~= cz and grid[cx][cz2].MurOuest ~= 0 then return false end
+				end
+			end
+		end
+		for _, h in ipairs(cases) do
+			dict[Demi.Cle(h[1], h[2])] = { Furniture = name, FurnitureID = h.ancre and ("C" .. orientation .. "_" .. idDemi) or idDemi }
+		end
+		finalX, finalZ = hx, hz
+		caseAncrageX, caseAncrageZ = hx, hz
+		-- centre et emprise (en demi-cases) : pour placer les clients devant une caisse
+		local minx, maxx, minz, maxz = math.huge, -math.huge, math.huge, -math.huge
+		for _, h in ipairs(cases) do
+			minx = math.min(minx, h[1]); maxx = math.max(maxx, h[1]); minz = math.min(minz, h[2]); maxz = math.max(maxz, h[2])
+		end
+		demiInfos = { CX = (minx + maxx) / 2, CZ = (minz + maxz) / 2, DX = dx, DZ = dz }
+
+	elseif categorie == "Furniture" then 
+		local hauteur = #masque
+		local largeur = #masque[1]
+
+		for i = 1, (4 - orientation) % 4 do
+			masque = TurnTab(masque)
+		end
+
+		local a, b = 1, 1
+		if infos.Pivot == "centre" then
+			-- pivot au centre du masque (stations 3x3) : le meuble tourne sur lui-meme, memes cases quelle que soit
+			-- l'orientation. Le masque a deja ete tourne : on prend le milieu de ses dimensions actuelles.
+			a = math.ceil(#masque[1] / 2)
+			b = math.ceil(#masque / 2)
+		elseif orientation == 1 then
+			a = 1;       b = largeur
+		elseif orientation == 2 then
+			a = largeur; b = hauteur
+		elseif orientation == 3 then
+			a = hauteur; b = 1
+		end
+		
+		for z = 1, #masque do
+			local ligne = masque[z]
+			for x = 1, #ligne do
+				if ligne[x] == 1 then
+					local checkX = caseAncrageX + (x - a)
+					local checkZ = caseAncrageZ + (z - b)
+
+					if checkX < 1 or checkX > currentX or checkZ < 1 or checkZ > currentZ then
+						return false
+					end
+					if CaseInterdite(plotcenter, zone, checkX, checkZ) then return false end
+					
+					if grid[checkX][checkZ][categorie] ~= 0 then return false end
+					
+					if grid[checkX][checkZ].Sol == 0 then return false end
+					
+					if x > 1 and ligne[x - 1] == 1 then
+						if grid[checkX - 1] and grid[checkX - 1][checkZ] and grid[checkX - 1][checkZ].MurNord ~= 0 then return false end
+					end
+					if z > 1 and masque[z - 1][x] == 1 then
+						if grid[checkX][checkZ].MurOuest ~= 0 then return false end
+					end
+					
+				end
+			end
+		end
+
+		for z = 1, #masque do
+			local ligne = masque[z]
+			for x = 1, #ligne do
+				if ligne[x] == 1 then
+					local targetX = caseAncrageX + (x - a)
+					local targetZ = caseAncrageZ + (z - b)
+					grid[targetX][targetZ][categorie] = name 
+					if x == a and z == b then
+						grid[targetX][targetZ].FurnitureID = "C" .. orientation .. "_" .. newFurnitureID
+					else
+						grid[targetX][targetZ].FurnitureID = newFurnitureID
+					end
+				end
+			end
+		end
+		finalX = caseAncrageX
+		finalZ = caseAncrageZ
+
+	elseif categorie == "Sol" or categorie == "Plafond" then
+		local checkX = caseAncrageX
+		local checkZ = caseAncrageZ
+		if checkX < 1 or checkX > currentX or checkZ < 1 or checkZ > currentZ then return false end
+		if CaseInterdite(plotcenter, zone, checkX, checkZ) then return false end
+		if grid[checkX][checkZ][categorie] ~= 0 then return false end
+
+		finalX = checkX; finalZ = checkZ
+		grid[checkX][checkZ][categorie] = Encoder(name, orientation)
+		if categorie == "Sol" then TerrainCase(plotcenter, zone, checkX, checkZ) end
+
+	elseif categorie == "Mur" then
+		local caseX = caseAncrageX
+		local caseZ = caseAncrageZ
+
+		if orientation == 2 then
+			caseX = caseX - 1
+		elseif orientation == 3 then
+			caseZ = caseZ + 1
+		end
+
+		local direction = nil
+		if orientation == 0 or orientation == 2 then
+			direction = "MurNord"
+		else
+			direction = "MurOuest"
+		end
+
+		if direction == "MurNord" then
+			if caseX < 1 or caseX > currentX or caseZ < 1 or caseZ > currentZ then return false end
+		else
+			if caseX < 1 or caseX > currentX or caseZ < 1 or caseZ > currentZ + 1 then return false end
+		end
+		
+		if grid[caseX][caseZ][direction] ~= 0 then return false end
+
+		local voisinX = caseX
+		local voisinZ = caseZ
+		if direction == "MurNord" then
+			voisinX = caseX + 1
+		else
+			voisinZ = caseZ - 1
+		end
+
+		local solVoisin = 0
+		if grid[voisinX] and grid[voisinX][voisinZ] then
+			solVoisin = grid[voisinX][voisinZ].Sol
+		end
+		if grid[caseX][caseZ].Sol == 0 and solVoisin == 0 then return false end
+		
+		local idActuel = grid[caseX][caseZ].FurnitureID or 0
+		local idVoisin = 0
+		if grid[voisinX] and grid[voisinX][voisinZ] then
+			idVoisin = grid[voisinX][voisinZ].FurnitureID or 0
+		end
+
+		if type(idActuel) == "string" and type(idVoisin) == "string" then
+			if string.find(idActuel, idVoisin, 1, true) or string.find(idVoisin, idActuel, 1, true) then
+				return false
+			end
+		end
+		finalX = caseX
+		finalZ = caseZ
+		grid[caseX][caseZ][direction] = Encoder(name, orientation)
+	end
+	
+	if deplace then
+		-- deplacement : l'objet existant est deplace sur les nouvelles cases, ses donnees (station / caisse) suivent
+		local data = PlayerData.GetData(player)
+		local fiche = data and ((data.Stations and data.Stations[newFurnitureID]) or (data.Caisses and data.Caisses[newFurnitureID]))
+		if fiche then
+			fiche.X = caseAncrageX; fiche.Z = caseAncrageZ; fiche.Orientation = orientation
+			if demiInfos then fiche.Demi = true; fiche.CX = demiInfos.CX; fiche.CZ = demiInfos.CZ; fiche.DX = demiInfos.DX; fiche.DZ = demiInfos.DZ end
+		end
+		local X = (caseAncrageX - 0.5) * CASE
+		local Z = (caseAncrageZ - 0.5) * CASE - DEMI
+		if demiInfos then X, Z = Demi.Centre(caseAncrageX, caseAncrageZ) end
+		local Y = (categorie == "Furniture") and Y_MEUBLE or ((categorie == "Plafond") and Y_PLAFOND or 0)
+		local cible = plotcenter:GetPivot() * CFrame.new(zone.decalage) * CFrame.new(X, Y, Z) * CFrame.Angles(0, math.rad(orientation * 90), 0)
+		deplace:PivotTo(cible)
+		deplace:SetAttribute("X", finalX); deplace:SetAttribute("Z", finalZ); deplace:SetAttribute("Orientation", orientation)
+		if categorie == "Mur" then
+			deplace:SetAttribute("Categorie", (orientation == 0 or orientation == 2) and "MurNord" or "MurOuest")
+		end
+		if zone.nom then deplace:SetAttribute("Zone", zone.nom) else deplace:SetAttribute("Zone", nil) end
+		if categorie == "Sol" then MajBorduresAutour(folder, plotcenter, zone, finalX, finalZ); MajAcces(player, zone, nil, nil) end
+		if data and data.Stations and data.Stations[newFurnitureID] then UpdateClientData:FireClient(player, "Stations", data.Stations) end
+		if data and data.Caisses and data.Caisses[newFurnitureID] then UpdateClientData:FireClient(player, "Caisses", data.Caisses) end
+		return true
+	end
+
+	if infos.Type == "Station" then
+		PlayerData.InitStation(player, newFurnitureID,name, infos.Automatic , caseAncrageX, caseAncrageZ, orientation)
+	end
+	
+	if infos.Type == "Caisse" then
+		print("init caisse")
+		PlayerData.InitCaisse(player, newFurnitureID,name, infos.Automatic, caseAncrageX, caseAncrageZ, orientation, demiInfos)
+	end
+	
+	PlotManager.PrintGrid(player, categorie)
+	Build(name, categorie, folder, plotcenter, caseAncrageX, caseAncrageZ, orientation, newFurnitureID, finalX, finalZ, zone)
+	if categorie == "Sol" then MajBorduresAutour(folder, plotcenter, zone, finalX, finalZ); MajAcces(player, zone, finalX, finalZ) end
+	return true
+end
+
+-- ======================================================================================================================
+-- DEPLACEMENT D'UN OBJET DEJA POSE : on libere ses cases (copie de sauvegarde), on tente la pose au nouvel endroit avec
+-- le meme identifiant, et si elle est refusee on remet les cases telles quelles. Aucun argent ne bouge.
+-- ======================================================================================================================
+local function CategorieDe(item)
+	local c = item:GetAttribute("Categorie")
+	if c == "MurNord" or c == "MurOuest" then return "Mur", c end
+	return c, c
+end
+
+-- cases occupees par l'objet dans la grille de sa zone : liste de {x, z, champ, valeur, idValeur}
+local function CasesDe(player, item)
+	local grid, nx, nz = PlayerData.GetGrid(player), maxX, maxZ
+	if item:GetAttribute("Zone") == "Annexe" then grid, nx, nz = PlayerData.GetAnnexe(player), PlayerData.ANNEXE_X, PlayerData.ANNEXE_Z + 1 end
+	local cat, champ = CategorieDe(item)
+	local cases = {}
+	if cat == "Furniture" and item:GetAttribute("Demi") then
+		-- v54 : demi-grille : entrees du dictionnaire portant cet identifiant
+		local id = item:GetAttribute("FurnitureID")
+		local dict = PlayerData.GetDemi(player, item:GetAttribute("Zone") == "Annexe")
+		if not (id and dict) then return nil end
+		for cle, c in pairs(dict) do
+			if type(c.FurnitureID) == "string" and string.find(c.FurnitureID, id, 1, true) then
+				table.insert(cases, {demiCle = cle, champ = "Demi", valeur = c})
+			end
+		end
+		return cases, grid, dict
+	elseif cat == "Furniture" then
+		local id = item:GetAttribute("FurnitureID")
+		if not id then return nil end
+		for x = 1, nx do for z = 1, nz do
+			local c = grid[x] and grid[x][z]
+			local cid = c and c.FurnitureID
+			if cid ~= 0 and type(cid) == "string" and string.find(cid, id, 1, true) then
+				table.insert(cases, {x = x, z = z, champ = "Furniture", valeur = c.Furniture, idValeur = cid})
+			end
+		end end
+	else
+		local X, Z = item:GetAttribute("X"), item:GetAttribute("Z")
+		local c = X and Z and grid[X] and grid[X][Z]
+		if not c then return nil end
+		table.insert(cases, {x = X, z = Z, champ = champ, valeur = c[champ]})
+	end
+	return cases, grid
+end
+
+function PlotManager.Deplacer(player: Player, item, orientation: number, targetCF)
+	local plot = plots[player.UserId]
+	if not plot or typeof(item) ~= "Instance" or not item:IsA("Model") or not item:IsDescendantOf(plot) then return false, "objet inconnu" end
+	local cat = CategorieDe(item)
+	local nom = item:GetAttribute("Name") or item.Name
+	if not cat or not Catalogue.GetInfo(cat, nom) then return false, "objet inconnu" end
+	-- une station / caisse en service ne bouge pas
+	local id = item:GetAttribute("FurnitureID")
+	local data = PlayerData.GetData(player)
+	if id and data then
+		local st = data.Stations and data.Stations[id]
+		if st and (st.Car ~= nil or st.Service ~= "Available") then return false, "station occupee par un client" end
+		local ca = data.Caisses and data.Caisses[id]
+		if ca and ca.Queue and #ca.Queue > 0 then return false, "caisse occupee" end
+	end
+	local cases, grid, dict = CasesDe(player, item)
+	if not cases or #cases == 0 then return false, "cases introuvables" end
+	-- 1) liberer
+	for _, c in ipairs(cases) do
+		if c.champ == "Demi" then dict[c.demiCle] = nil
+		else
+			grid[c.x][c.z][c.champ] = 0
+			if c.champ == "Furniture" then grid[c.x][c.z].FurnitureID = 0 end
+		end
+	end
+	-- 2) poser au nouvel endroit avec le meme identifiant
+	local ok = PlotManager.Place(player, nom, cat, orientation, targetCF, {deplacement = item})
+	if ok then
+		if cat == "Sol" then
+			local spawnfolder = usedPlots[player.UserId]
+			local plotcenter = spawnfolder and spawnfolder:FindFirstChild("PlotCenter")
+			local zone = (item:GetAttribute("Zone") == "Annexe") and ZoneAnnexe(player, spawnfolder, plotcenter) or ZonePrincipale(player)
+			for _, c in ipairs(cases) do
+				if plotcenter and zone and grid[c.x][c.z].Sol == 0 then
+					TerrainCase(plotcenter, zone, c.x, c.z)
+					MajBorduresAutour(plot, plotcenter, zone, c.x, c.z)
+				end
+			end
+		end
+		return true
+	end
+	-- 3) refus : on remet tout
+	for _, c in ipairs(cases) do
+		if c.champ == "Demi" then dict[c.demiCle] = c.valeur
+		else
+			grid[c.x][c.z][c.champ] = c.valeur
+			if c.champ == "Furniture" then grid[c.x][c.z].FurnitureID = c.idValeur end
+		end
+	end
+	return false, "emplacement refuse"
+end
+
+function PlotManager.Destroy(player: Player, item: Model)
+	local plot = plots[player.UserId]
+	if not plot or not item:IsDescendantOf(plot) then
+		return false
+	end
+ 	local categorie = item:GetAttribute("Categorie")
+	local X = item:GetAttribute("X")
+	local Z = item:GetAttribute("Z")
+
+	if not categorie or not X or not Z then return false end
+
+	-- grille de la zone de l'objet (annexe ou principale)
+	local grid, zoneX, zoneZ = PlayerData.GetGrid(player), maxX, maxZ
+	if item:GetAttribute("Zone") == "Annexe" then
+		grid, zoneX, zoneZ = PlayerData.GetAnnexe(player), PlayerData.ANNEXE_X, PlayerData.ANNEXE_Z + 1
+	end
+	if not (grid and grid[X] and grid[X][Z]) then return false end
+
+	if categorie == "Sol" or categorie == "Plafond" or categorie == "MurNord" or categorie == "MurOuest" then
+		grid[X][Z][categorie] = 0
+		if categorie == "Sol" then
+			local spawnfolder = usedPlots[player.UserId]
+			local plotcenter = spawnfolder and spawnfolder:FindFirstChild("PlotCenter")
+			local zone = (item:GetAttribute("Zone") == "Annexe") and ZoneAnnexe(player, spawnfolder, plotcenter) or ZonePrincipale(player)
+			if plotcenter and zone then TerrainCase(plotcenter, zone, X, Z) end
+			item:Destroy()
+			if plotcenter and zone then MajBorduresAutour(plot, plotcenter, zone, X, Z) end
+			MajAcces(player, zone, X, Z)
+			return true, item.Name, categorie
+		end
+		item:Destroy()
+		return true,item.Name, categorie
+	end
+
+	if categorie == "Furniture" and item:GetAttribute("Demi") then
+		-- v54 : demi-grille
+		local targetID = item:GetAttribute("FurnitureID")
+		local dict = PlayerData.GetDemi(player, item:GetAttribute("Zone") == "Annexe")
+		if not (targetID and dict) then return false end
+		for cle, c in pairs(dict) do
+			if type(c.FurnitureID) == "string" and string.find(c.FurnitureID, targetID, 1, true) then dict[cle] = nil end
+		end
+		local infos = Catalogue.GetInfo("Furniture", item.Name)
+		if infos and infos.Type == "Caisse" then PlayerData.RemoveCaisse(player, targetID) end
+		item:Destroy()
+		return true
+	end
+
+	if categorie == "Furniture" then
+		local targetID = item:GetAttribute("FurnitureID")
+		if not targetID then return false end
+		for x = 1, zoneX do
+			for z = 1, zoneZ do
+				local currentID = grid[x][z].FurnitureID
+				if currentID ~= 0 and type(currentID) == "string" and string.find(currentID, targetID, 1, true) then
+					grid[x][z].Furniture = 0
+					grid[x][z].FurnitureID = 0
+				end
+			end
+		end
+		
+		local infos = Catalogue.GetInfo("Furniture", item.Name)
+		
+		if infos and infos.Type == "Station" then
+			PlayerData.RemoveStation(player, targetID)
+		end
+		if infos and infos.Type == "Caisse" then
+			PlayerData.RemoveCaisse(player, targetID)
+		end
+		
+		item:Destroy()
+
+		return true
+	end
+	return false
+end
+
+-- ======================================================================================================================
+-- GESTION DES EXTENSIONS
+-- ======================================================================================================================
+
+function PlotManager.BuyExtension(player: Player, axis: string)
+	if axis ~= "X" and axis ~= "Z" then return false end
+
+	local nextX, nextZ = PlayerData.GetNextExtensions(player)
+	local targetExtension = (axis == "X") and nextX or nextZ
+
+	if not targetExtension then
+		return false
+	end
+
+	local Infos = Catalogue.GetInfo("Extension", targetExtension)
+	if not Infos then return false end
+
+	local price = Infos.Prix
+
+	if PlayerData.GetMoney(player) >= price then
+		PlayerData.SpendMoney(player, price)
+		PlayerData.UnlockExtension(player, targetExtension)
+		return true
+	else
+		return false
+	end
+end
+
+-- ======================================================================================================================
+-- GESTION DU PLOT
+-- ======================================================================================================================
+
+function PlotManager.ClaimPlot(player: Player, spawnfolder: Instance): boolean
+	if typeof(spawnfolder) ~= "Instance" then return false end
+	if spawnfolder.Parent ~= PlotSpawns then return false end
+	if usedPlots[player.UserId] then return false end
+
+	if spawnfolder:GetAttribute("OwnerId") ~= nil then return false end
+
+	spawnfolder:SetAttribute("OwnerId", player.UserId)
+	usedPlots[player.UserId] = spawnfolder
+	return true
+end
+
+function PlotManager.SpawnPlot(player: Player): Model
+	local currentX, currentZ = PlayerData.GetPlotSize(player)
+
+	local spawnfolder = usedPlots[player.UserId]
+	if not spawnfolder then
+		return nil
+	end
+	
+	local plotcenter = spawnfolder:FindFirstChild("PlotCenter") 
+	local spawn = spawnfolder:FindFirstChild("PlayerSpawn")
+	PlotManager.DetruireApercu(player)          -- la vraie parcelle remplace l'apercu de l'ecran-titre
+
+	local folder = Instance.new("Folder")
+	folder.Name = player.Name .. "'s plot"
+	folder.Parent = workspace.Plots
+	plots[player.UserId] = folder
+	local center = Instance.new("ObjectValue")
+	center.Name = "PlotCenterRef"
+	center.Value = plotcenter
+	center.Parent = folder
+
+	local function teleportCharacter(character)
+		task.wait(0.1)
+		character:PivotTo(spawn:GetPivot() * CFrame.new(0, 3, 0))
+	end
+	teleportCharacter(player.Character or player.CharacterAdded:Wait())
+	player.CharacterAdded:Connect(function(newCharacter)
+		if plots[player.UserId] then
+			teleportCharacter(newCharacter)
+		end
+	end)
+
+	-- reconstruction des deux zones (grille principale, puis annexe si le plot en a une)
+	local zones = {ZonePrincipale(player)}
+	local annexe = ZoneAnnexe(player, spawnfolder, plotcenter)
+	if annexe then table.insert(zones, annexe) end
+
+	for _, zone in ipairs(zones) do TerrainZone(plotcenter, zone, false) end
+	for _, zone in ipairs(zones) do
+		local grid = zone.grid
+		for x = 1, zone.nx do
+			for z = 1, zone.nz + 1 do
+				local case = grid[x] and grid[x][z]
+				if not case then continue end
+				if case.Furniture ~= 0 then
+					local rawID = case.FurnitureID
+					if type(rawID) == "string" and string.sub(rawID, 1, 1) == "C" and string.sub(rawID, 3, 3) == "_" then
+						local orientation = tonumber(string.sub(rawID, 2, 2))
+						local vraiID = string.sub(rawID, 4) 
+						Build(case.Furniture, "Furniture", folder, plotcenter, x, z, orientation, vraiID, nil, nil, zone)
+					end
+				end
+				if case.Sol ~= 0 then
+					local nom, o = Decoder(case.Sol)
+					Build(nom, "Sol", folder, plotcenter, x, z, o, nil, x, z, zone)
+				end
+				if case.Plafond ~= 0 then
+					local nom, o = Decoder(case.Plafond)
+					Build(nom, "Plafond", folder, plotcenter, x, z, o, nil, x, z, zone)
+				end
+				-- Murs : la grille memorise la case porteuse (MurNord = bord +X de la case, MurOuest = bord -Z de la case) ;
+				-- on reconstruit depuis la case survolee au moment de la pose pour retrouver la meme face avant.
+				if case.MurNord ~= 0 then
+					local nom, o = Decoder(case.MurNord)
+					if o ~= 0 and o ~= 2 then o = 0 end
+					Build(nom, "Mur", folder, plotcenter, (o == 2) and (x + 1) or x, z, o, nil, x, z, zone)
+				end
+				if case.MurOuest ~= 0 then
+					local nom, o = Decoder(case.MurOuest)
+					if o ~= 1 and o ~= 3 then o = 1 end
+					Build(nom, "Mur", folder, plotcenter, x, (o == 3) and (z - 1) or z, o, nil, x, z, zone)
+				end
+			end
+		end
+		-- v54 : meubles de la demi-grille (ancre "C<o>_id")
+		for cle, c in pairs(zone.demi or {}) do
+			local id, o = LireID(c.FurnitureID)
+			if id then
+				local hx, hz = string.match(cle, "^(%-?%d+)_(%-?%d+)$")
+				if hx then Build(c.Furniture, "Furniture", folder, plotcenter, tonumber(hx), tonumber(hz), o or 0, id, nil, nil, zone) end
+			end
+		end
+		BorduresZone(folder, plotcenter, zone)
+	end
+	return spawnfolder, folder
+end
+
+-- ======================================================================================================================
+-- APERCU "TA PARTIE" (ecran-titre v23) : des la connexion, avant le choix du plot, une copie de la parcelle sauvegardee
+-- (sols, murs, toits, meubles) est construite loin sous la map (Y = -700, une case de 400 studs par joueur) et son nom
+-- est donne au client dans l'attribut PlotPath ; le client la clone dans le ViewportFrame du menu. Detruite quand la vraie
+-- parcelle apparait (SpawnPlot) ou au depart du joueur.
+-- ======================================================================================================================
+local apercus = {}
+function PlotManager.Apercu(player: Player)
+	PlotManager.DetruireApercu(player)
+	local grid = PlayerData.GetGrid(player)
+	local nx, nz = PlayerData.GetPlotSize(player)
+	if not (grid and nx and nz) then return end
+	local dossier = workspace:FindFirstChild("Apercus")
+	if not dossier then dossier = Instance.new("Folder"); dossier.Name = "Apercus"; dossier.Parent = workspace end
+	local modele = Instance.new("Model"); modele.Name = "Apercu_" .. player.UserId
+	pcall(function() modele.ModelStreamingMode = Enum.ModelStreamingMode.Persistent end)
+	local centre = Instance.new("Part"); centre.Name = "PlotCenter"; centre.Size = Vector3.new(4, 1, 4); centre.Transparency = 1
+	centre.Anchored = true; centre.CanCollide = false; centre.CanQuery = false; centre.CanTouch = false
+	local k = (player.UserId % 16)
+	centre.CFrame = CFrame.new(-3000 + k * 400, -700, -3000)
+	centre.Parent = modele
+	local zone = {grid = grid, nx = nx, nz = nz, decalage = Vector3.zero, nom = nil}
+	local n = 0
+	for x = 1, nx do
+		for z = 1, nz + 1 do
+			local case = grid[x] and grid[x][z]
+			if not case then continue end
+			if case.Furniture ~= 0 then
+				local rawID = case.FurnitureID
+				if type(rawID) == "string" and string.sub(rawID, 1, 1) == "C" and string.sub(rawID, 3, 3) == "_" then
+					Build(case.Furniture, "Furniture", modele, centre, x, z, tonumber(string.sub(rawID, 2, 2)) or 0, nil, nil, nil, zone); n += 1
+				end
+			end
+			if case.Sol ~= 0 then local nom, o = Decoder(case.Sol); Build(nom, "Sol", modele, centre, x, z, o, nil, x, z, zone); n += 1 end
+			if case.Plafond ~= 0 then local nom, o = Decoder(case.Plafond); Build(nom, "Plafond", modele, centre, x, z, o, nil, x, z, zone); n += 1 end
+			if case.MurNord ~= 0 then
+				local nom, o = Decoder(case.MurNord); if o ~= 0 and o ~= 2 then o = 0 end
+				Build(nom, "Mur", modele, centre, (o == 2) and (x + 1) or x, z, o, nil, x, z, zone); n += 1
+			end
+			if case.MurOuest ~= 0 then
+				local nom, o = Decoder(case.MurOuest); if o ~= 1 and o ~= 3 then o = 1 end
+				Build(nom, "Mur", modele, centre, x, (o == 3) and (z - 1) or z, o, nil, x, z, zone); n += 1
+			end
+		end
+	end
+	for cle, c in pairs(PlayerData.GetDemi(player, false) or {}) do
+		local id, o = LireID(c.FurnitureID)
+		local hx, hz = string.match(cle, "^(%-?%d+)_(%-?%d+)$")
+		if id and hx then Build(c.Furniture, "Furniture", modele, centre, tonumber(hx), tonumber(hz), o or 0, nil, nil, nil, zone); n += 1 end
+	end
+	if n == 0 then modele:Destroy(); return end
+	BorduresZone(modele, centre, zone)
+	-- v47 / v49 : decor autour de la parcelle (herbe + trottoirs + routes des deux cotes), comme dans la maquette "Ta partie".
+	-- Repere du plot : X = le long de la route du tour, Z = de la route vers le tunnel ; la ROUTE DU TOUR longe le bord
+	-- Z = -DEMI (rangee 1, acces), la BRANCHE longe le bord X = 0 (plots de type A ; miroir pour les autres, sans importance
+	-- pour un apercu). Map V21 : trottoirs de 15,9, chaussee de 50. Pieces "Decor_*" : le client les ignore pour cadrer.
+	do
+		local L, P = nx * CASE, (nz + 1) * CASE
+		local TROT, ROUTE, MARGE = 15.9, 50, 60
+		local function piece(nom, taille, cf, couleur, mat)
+			local q = Instance.new("Part"); q.Name = nom; q.Anchored = true; q.CanCollide = false; q.CanQuery = false; q.CanTouch = false
+			q.Size = taille; q.CFrame = centre.CFrame * cf; q.Color = couleur; q.Material = mat or Enum.Material.SmoothPlastic
+			q.TopSurface = Enum.SurfaceType.Smooth; q.BottomSurface = Enum.SurfaceType.Smooth; q.Parent = modele
+			return q
+		end
+		local herbe, trottoir, bitume = Color3.fromRGB(96, 152, 74), Color3.fromRGB(203, 198, 184), Color3.fromRGB(58, 60, 66)
+		local z0 = -DEMI                                   -- bord du plot cote route du tour
+		-- herbe : toute la parcelle + marges, jusqu'au-dela des routes
+		piece("Decor_Herbe", Vector3.new(L + TROT + ROUTE + 2 * MARGE, 1, P + TROT + ROUTE + 2 * MARGE),
+			CFrame.new((L - TROT - ROUTE) / 2, -0.9, z0 + (P + MARGE - TROT - ROUTE) / 2), herbe, Enum.Material.Grass)
+		-- cote branche (X = 0) : trottoir puis chaussee, du bord de la route du tour jusqu'au bout du plot
+		local lz = P + MARGE + TROT + ROUTE
+		local cz = z0 - TROT - ROUTE + lz / 2
+		piece("Decor_Trottoir1", Vector3.new(TROT, 1.4, lz), CFrame.new(-TROT / 2, -0.5, cz), trottoir)
+		piece("Decor_Route1", Vector3.new(ROUTE, 1, lz), CFrame.new(-TROT - ROUTE / 2, -0.7, cz), bitume)
+		-- cote route du tour (Z = -DEMI) : trottoir puis chaussee
+		local lx = L + MARGE + TROT + ROUTE
+		local cx = -TROT - ROUTE + lx / 2
+		piece("Decor_Trottoir2", Vector3.new(lx, 1.4, TROT), CFrame.new(cx, -0.5, z0 - TROT / 2), trottoir)
+		piece("Decor_Route2", Vector3.new(lx, 1, ROUTE), CFrame.new(cx, -0.7, z0 - TROT - ROUTE / 2), bitume)
+		-- ligne tiretee au milieu des chaussees (une seule ligne, sur l'axe, comme la map V21)
+		for k = 0, math.floor((lz - 10) / 20) do
+			piece("Decor_Ligne1", Vector3.new(0.6, 1.02, 10), CFrame.new(-TROT - ROUTE / 2, -0.7, z0 - TROT - ROUTE + 5 + k * 20), Color3.new(1, 1, 1))
+		end
+		for k = 0, math.floor((lx - 10) / 20) do
+			piece("Decor_Ligne2", Vector3.new(10, 1.02, 0.6), CFrame.new(-TROT - ROUTE + 5 + k * 20, -0.7, z0 - TROT - ROUTE / 2), Color3.new(1, 1, 1))
+		end
+	end
+	-- les copies ne doivent rien declencher : pas de scripts, pas de collisions
+	for _, d in ipairs(modele:GetDescendants()) do
+		if d:IsA("BaseScript") then d:Destroy()
+		elseif d:IsA("BasePart") then d.Anchored = true; d.CanCollide = false; d.CanQuery = false; d.CanTouch = false end
+	end
+	modele.Parent = dossier
+	apercus[player.UserId] = modele
+	player:SetAttribute("PlotPath", modele.Name)
+end
+function PlotManager.DetruireApercu(player: Player)
+	local m = apercus[player.UserId]
+	if m then m:Destroy(); apercus[player.UserId] = nil end
+	if player.Parent then player:SetAttribute("PlotPath", nil) end
+end
+
+function PlotManager.RemovePlot(player: Player)
+	PlotManager.DetruireApercu(player)
+	do
+		local spawnfolder = usedPlots[player.UserId]
+		local plotcenter = spawnfolder and spawnfolder:FindFirstChild("PlotCenter")
+		if plotcenter then
+			pcall(function()
+				TerrainZone(plotcenter, ZonePrincipale(player), true)
+				TerrainZone(plotcenter, ZoneAnnexe(player, spawnfolder, plotcenter), true)
+			end)
+		end
+	end
+	if plots[player.UserId] then
+		plots[player.UserId]:Destroy()
+		plots[player.UserId] = nil
+	end
+	
+	local spawnfolder = usedPlots[player.UserId]
+	if spawnfolder then
+		spawnfolder:SetAttribute("OwnerId", nil)
+		usedPlots[player.UserId] = nil
+	end
+end
+
+return PlotManager

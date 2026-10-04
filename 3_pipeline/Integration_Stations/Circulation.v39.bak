@@ -1,0 +1,220 @@
+--[[ Circulation (ModuleScript, ServerScriptService) — les voitures ROULENT SUR LE PLOT sans traverser les objets.
+	Regles (Thomas) :
+	  * une voiture a besoin d'un couloir de DEUX CASES DE LARGE (20 studs) fait de goudron (sol_goudron / sol_route /
+	    sol_beton), sans meuble, sans mur, de l'entree du plot jusqu'a l'entree de la station, puis de la sortie de la
+	    station jusqu'a la sortie du plot ;
+	  * s'il n'y a pas un tel couloir, la voiture ne peut pas entrer : elle passe son chemin (et le joueur est prevenu) ;
+	  * conduite realiste : la voiture ralentit en arrivant au plot, roule doucement dans le plot et encore moins vite dans
+	    les virages, puis reaccelere sur la route.
+
+	Modele : la grille du plot (cases de 10 studs, PlayerData.GetGrid ; case (x, z) centree en (10x - 5, 0, 10z - 10) dans
+	le repere du PlotCenter). La voiture est representee par un BLOC 2 x 2 cases dont le centre est un coin de case :
+	bloc (bx, bz) = cases (bx..bx+1, bz..bz+1), centre local (10 bx, 0, 10 bz - 5). Un bloc est libre si ses 4 cases sont
+	roulables et qu'aucun mur ne le traverse ; un deplacement d'un bloc a son voisin est possible si aucun mur ne coupe les
+	deux cases franchies. Recherche de chemin en largeur (BFS) sur les blocs, puis simplification en points de virage.
+	Murs : grid[x][z].MurNord = mur sur le bord +X de la case, MurOuest = mur sur le bord -Z (convention de PlotManager).
+]]
+local ServerScriptService = game:GetService("ServerScriptService")
+local PlayerData = require(ServerScriptService:WaitForChild("PlayerData"))
+
+local Circulation = {}
+
+-- vitesses (studs/s)
+Circulation.VITESSE_ROUTE = 32        -- sur la route (CarManager.VITESSE)
+Circulation.VITESSE_APPROCHE = 18     -- carrefour -> devant l'entree -> dans le plot : on ralentit
+Circulation.VITESSE_PLOT = 11         -- ligne droite dans le plot
+Circulation.VITESSE_VIRAGE = 6.5      -- virage a 90 degres dans le plot
+Circulation.VITESSE_STATION = 5       -- derniers metres pour se garer / redemarrer
+
+-- sols sur lesquels une voiture roule (carte "Goudron" du menu Sol + route + beton)
+Circulation.SOLS_ROULANTS = { sol_goudron = true, sol_route = true, sol_beton = true }
+
+local RECUL_ENTREE = 25               -- studs : point d'entree d'une station = place de parking reculee de 25 studs (hors du 3 x 3)
+local AVANCE_SORTIE = 25              -- studs : point de sortie = 25 studs apres la place
+
+-- ----------------------------------------------------------------------------------------------------------------------
+-- carte du plot
+-- ----------------------------------------------------------------------------------------------------------------------
+local function roulable(grid, nx, nz, x, z)
+	if x < 1 or z < 1 or x > nx or z > nz then return false end
+	local c = grid[x] and grid[x][z]
+	if not c then return false end
+	if c.Furniture ~= 0 and c.Furniture ~= nil then return false end
+	return Circulation.SOLS_ROULANTS[c.Sol] == true
+end
+
+-- mur entre (x, z) et (x + 1, z) : MurNord de (x, z) ; entre (x, z) et (x, z - 1) : MurOuest de (x, z)
+local function murX(grid, x, z) local c = grid[x] and grid[x][z]; return c ~= nil and c.MurNord ~= 0 and c.MurNord ~= nil end
+local function murZ(grid, x, z) local c = grid[x] and grid[x][z]; return c ~= nil and c.MurOuest ~= 0 and c.MurOuest ~= nil end
+
+function Circulation.Carte(player)
+	local grid = PlayerData.GetGrid(player)
+	local nx, nz = PlayerData.GetPlotSize(player)
+	if not (grid and nx and nz) then return nil end
+	local C = { grid = grid, nx = nx, nz = nz }
+	-- bloc (bx, bz) libre : 4 cases roulables, pas de mur interieur
+	function C.blocLibre(bx, bz)
+		if bx < 1 or bz < 1 or bx + 1 > nx or bz + 1 > nz then return false end
+		if not (roulable(grid, nx, nz, bx, bz) and roulable(grid, nx, nz, bx + 1, bz)
+			and roulable(grid, nx, nz, bx, bz + 1) and roulable(grid, nx, nz, bx + 1, bz + 1)) then return false end
+		if murX(grid, bx, bz) or murX(grid, bx, bz + 1) then return false end          -- mur vertical au milieu
+		if murZ(grid, bx, bz + 1) or murZ(grid, bx + 1, bz + 1) then return false end  -- mur horizontal au milieu
+		return true
+	end
+	-- passage du bloc (bx, bz) au bloc voisin dans la direction (dx, dz) (un seul des deux non nul)
+	function C.passage(bx, bz, dx, dz)
+		if dx == 1 then return not (murX(grid, bx + 1, bz) or murX(grid, bx + 1, bz + 1)) end
+		if dx == -1 then return not (murX(grid, bx - 1, bz) or murX(grid, bx - 1, bz + 1)) end
+		if dz == 1 then return not (murZ(grid, bx, bz + 2) or murZ(grid, bx + 1, bz + 2)) end
+		if dz == -1 then return not (murZ(grid, bx, bz + 1) or murZ(grid, bx + 1, bz + 1)) end
+		return false
+	end
+	return C
+end
+
+-- ----------------------------------------------------------------------------------------------------------------------
+-- conversions repere du plot <-> grille
+-- ----------------------------------------------------------------------------------------------------------------------
+-- coupe les erreurs d'arrondi (une rotation de 90 degres donne des composantes en 1e-8 au lieu de 0 : sans cela, un point
+-- exactement sur un coin de case pouvait tomber dans la case voisine et decaler le bloc d'entree/sortie d'une station)
+local function net(v) return math.round(v * 1000) / 1000 end
+local function nul(v) return math.abs(v) < 1e-4 and 0 or v end
+
+-- case contenant un point du monde
+function Circulation.CaseDe(pivot, position)
+	local l = pivot:PointToObjectSpace(position)
+	return math.floor(net(l.X) / 10) + 1, math.floor((net(l.Z) + 5) / 10) + 1
+end
+
+-- bloc dont le centre (coin de case) est le plus proche d'un point du monde
+function Circulation.BlocDe(carte, pivot, position)
+	local l = pivot:PointToObjectSpace(position)
+	local bx = math.clamp(math.floor(net(l.X) / 10 + 0.5), 1, carte.nx - 1)
+	local bz = math.clamp(math.floor((net(l.Z) + 5) / 10 + 0.5), 1, carte.nz - 1)
+	return bx, bz
+end
+
+function Circulation.MondeBloc(pivot, bx, bz, y)
+	local p = pivot:PointToWorldSpace(Vector3.new(10 * bx, 0, 10 * bz - 5))
+	return Vector3.new(p.X, y, p.Z)
+end
+
+-- ----------------------------------------------------------------------------------------------------------------------
+-- chemin (BFS sur les blocs)
+-- ----------------------------------------------------------------------------------------------------------------------
+local DIRS = { {1, 0}, {-1, 0}, {0, 1}, {0, -1} }
+
+-- renvoie la liste des blocs {bx, bz} du depart a l'arrivee (inclus), ou nil s'il n'y a pas de couloir
+function Circulation.Chemin(carte, dbx, dbz, abx, abz)
+	if not carte.blocLibre(dbx, dbz) or not carte.blocLibre(abx, abz) then return nil end
+	if dbx == abx and dbz == abz then return { {dbx, dbz} } end
+	local cle = function(x, z) return x * 1000 + z end
+	local file, tete = { {dbx, dbz} }, 1
+	local parent = { [cle(dbx, dbz)] = false }
+	while tete <= #file do
+		local b = file[tete]; tete += 1
+		for _, d in ipairs(DIRS) do
+			local nx2, nz2 = b[1] + d[1], b[2] + d[2]
+			local k = cle(nx2, nz2)
+			if parent[k] == nil and carte.blocLibre(nx2, nz2) and carte.passage(b[1], b[2], d[1], d[2]) then
+				parent[k] = b
+				if nx2 == abx and nz2 == abz then
+					local chemin, cur = {}, {nx2, nz2}
+					while cur do table.insert(chemin, 1, cur); cur = parent[cle(cur[1], cur[2])] end
+					return chemin
+				end
+				table.insert(file, {nx2, nz2})
+			end
+		end
+	end
+	return nil
+end
+
+-- ----------------------------------------------------------------------------------------------------------------------
+-- trajet : points de virage + vitesses (conduite realiste)
+-- ----------------------------------------------------------------------------------------------------------------------
+-- chemin de blocs -> liste d'etapes {cf = CFrame, vitesse = studs/s}. La voiture regarde dans le sens de la marche ;
+-- a un virage elle arrive lentement, tourne (courbe de Bezier cote client) et repart.
+function Circulation.Trajet(carte, pivot, chemin, y, capFinal)
+	local etapes = {}
+	if #chemin == 0 then return etapes end
+	local function pos(b) return Circulation.MondeBloc(pivot, b[1], b[2], y) end
+	-- points de virage : on garde les blocs ou la direction change, plus le dernier
+	local coins = {}
+	for i = 2, #chemin - 1 do
+		local d1 = { chemin[i][1] - chemin[i - 1][1], chemin[i][2] - chemin[i - 1][2] }
+		local d2 = { chemin[i + 1][1] - chemin[i][1], chemin[i + 1][2] - chemin[i][2] }
+		if d1[1] ~= d2[1] or d1[2] ~= d2[2] then table.insert(coins, i) end
+	end
+	table.insert(coins, #chemin)
+	local precedent = pos(chemin[1])
+	for n, i in ipairs(coins) do
+		local p = pos(chemin[i])
+		-- direction de sortie du point : vers le bloc suivant s'il existe, sinon la direction d'arrivee (ou le cap final)
+		local suivant = chemin[i + 1] and pos(chemin[i + 1]) or nil
+		local dir
+		if suivant then dir = (suivant - p) else dir = (p - precedent) end
+		if n == #coins and capFinal then dir = capFinal end
+		if dir.Magnitude < 1e-3 then dir = Vector3.new(0, 0, -1) end
+		dir = Vector3.new(dir.X, 0, dir.Z).Unit
+		-- vitesse : un virage (direction d'arrivee differente de la direction de sortie) se prend lentement
+		local arrivee = (p - precedent); arrivee = Vector3.new(arrivee.X, 0, arrivee.Z)
+		local virage = arrivee.Magnitude > 1e-3 and arrivee.Unit:Dot(dir) < 0.9
+		table.insert(etapes, { cf = CFrame.lookAt(p, p + dir), vitesse = virage and Circulation.VITESSE_VIRAGE or Circulation.VITESSE_PLOT })
+		precedent = p
+	end
+	return etapes
+end
+
+-- ----------------------------------------------------------------------------------------------------------------------
+-- points d'une station : entree (25 studs avant la place, en dehors du 3 x 3) et sortie (25 studs apres)
+-- ----------------------------------------------------------------------------------------------------------------------
+function Circulation.PointsStation(cfParc)
+	local look = Vector3.new(nul(cfParc.LookVector.X), 0, nul(cfParc.LookVector.Z)).Unit
+	local entree = cfParc.Position - look * RECUL_ENTREE
+	local sortie = cfParc.Position + look * AVANCE_SORTIE
+	return CFrame.lookAt(entree, entree + look), CFrame.lookAt(sortie, sortie + look)
+end
+
+-- Y de roulage dans le plot (celui du noeud Entree)
+function Circulation.YPlot(spawnFolder, pivot)
+	local e = spawnFolder and spawnFolder:FindFirstChild("Entree")
+	return e and e.Position.Y or pivot.Position.Y
+end
+
+-- blocs d'entree et de sortie du plot (d'apres les noeuds Entree et ExitNodes/1 du PlotSpawn)
+function Circulation.BlocsAcces(carte, pivot, spawnFolder)
+	local e = spawnFolder:FindFirstChild("Entree")
+	local s = spawnFolder:FindFirstChild("ExitNodes") and spawnFolder.ExitNodes:FindFirstChild("1")
+	if not (e and s) then return nil end
+	local ebx, ebz = Circulation.BlocDe(carte, pivot, e.Position)
+	local sbx, sbz = Circulation.BlocDe(carte, pivot, s.Position)
+	return ebx, ebz, sbx, sbz
+end
+
+-- Une station est-elle desservie ? (couloir entree du plot -> entree de la station, et sortie de la station -> sortie du
+-- plot). Renvoie true/false et, si oui, les deux chemins de blocs.
+function Circulation.StationDesservie(carte, pivot, spawnFolder, cfParc)
+	local ebx, ebz, sbx, sbz = Circulation.BlocsAcces(carte, pivot, spawnFolder)
+	if not ebx then return false end
+	-- les deux cases du bord (rangee 1, sous l'acces) doivent aussi etre libres : la voiture les traverse
+	if not carte.blocLibre(ebx, math.max(1, ebz - 1)) then return false, "entree" end
+	if not carte.blocLibre(sbx, math.max(1, sbz - 1)) then return false, "sortie" end
+	local cfEntree, cfSortie = Circulation.PointsStation(cfParc)
+	local abx, abz = Circulation.BlocDe(carte, pivot, cfEntree.Position)
+	local qbx, qbz = Circulation.BlocDe(carte, pivot, cfSortie.Position)
+	local aller = Circulation.Chemin(carte, ebx, ebz, abx, abz)
+	if not aller then return false, "entree" end
+	local retour = Circulation.Chemin(carte, qbx, qbz, sbx, sbz)
+	if not retour then return false, "sortie" end
+	return true, aller, retour
+end
+
+-- Le plot a-t-il au moins un couloir complet entree -> sortie ? (pour prevenir le joueur)
+function Circulation.RouteTraversante(carte, pivot, spawnFolder)
+	local ebx, ebz, sbx, sbz = Circulation.BlocsAcces(carte, pivot, spawnFolder)
+	if not ebx then return false end
+	return Circulation.Chemin(carte, ebx, ebz, sbx, sbz) ~= nil
+end
+
+return Circulation

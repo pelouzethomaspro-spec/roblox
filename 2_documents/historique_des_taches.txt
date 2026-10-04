@@ -1,0 +1,192 @@
+#1 [completed] Inspecter le FBX PACK_10_3 (objets, dimensions, pivots)
+   Lister les meshes du FBX : noms, bounding boxes, unités, pour classer murs / sols / plafonds / portes et vérifier la taille 10 studs.
+
+#2 [completed] Analyser le placement actuel des Sol/Mur/Plafond dans le tycoon
+   Comprendre comment Furniture.lua / PlotManager / ClientBuild traitent Sol, Mur, Plafond (masques, pivot, bords de cellule) pour brancher les nouveaux modèles au même mécanisme.
+
+#3 [completed] Construire les modèles Roblox et le catalogue des constructions
+   Créer un modèle par construction dans ReplicatedStorage/Furniture (géométrie du FBX, 10 studs, pivot centre), entrées Furniture.lua, correspondance avec les cartes du menu Build (sols, murs, portes, toits).
+
+#4 [completed] Reconstruire la place, valider et livrer
+   Pipeline fusion → merger → validator, contrôle syntaxe Luau, envoi du .rbxl et explication.
+
+#5 [completed] Inspecter la nouvelle map (zip) et le document Google
+   Contenu du zip MAP_V17_Transfert_complet, structure des plots, routes, tunnel, rond-point, usine ; lire le doc Google.
+
+#6 [completed] Basculer le jeu sur la nouvelle map (plots, spawns, caméras)
+   Remplacer l'ancienne map par la nouvelle, recréer PlotSpawns (PlotCenter, PlayerSpawn, Camera, ExitNodes, QueueNodes) alignés sur les plots quadrillés de la map.
+
+#7 [completed] Tracés des voitures : tunnel → plot → sortie (bleu) et usine → rond-point ×4 → sortie (rouge)
+   Définir les waypoints des deux tracés, faire spawner les voitures à cadence faible, voitures d'ambiance du centre.
+
+#8 [completed] Reconstruire, valider et livrer
+   Pipeline complet, vérifications géométriques, envoi du .rbxl.
+
+#9 [completed] Corriger les pivots des constructions (grille alignée)
+   PivotOffset sur la pièce principale (le PrimaryPart ignorait WorldPivot) : passe de correction dans Installer_Constructions, exécution dans Studio, vérification anomalies = 0.
+
+#10 [in_progress] Voitures : sens de marche, roues qui tournent, bruit moteur (client)
+   SpawnCar oriente le Root d'après les roues avant/arrière ; TWEENController fait tourner les roues et joue un son moteur local pendant les trajets.
+
+#11 [completed] Zone annexe 3×3 constructible en face de la route
+   Part Annexe dans PlotSpawns (gen_map), grille séparée dans PlayerData/DataManager, PlotManager (placer/détruire/reconstruire), ClientBuild (aimantation + quadrillage).
+
+#12 [pending] Entrée/sortie du plot : vérifier le trajet des voitures en test
+   Les voitures n'entrent que si une station existe (Thomas n'avait pas d'argent : 150 $ de départ, station 600+). Relever l'argent de départ, tester avec une station : entrée par le bateau, sortie par ExitNodes.
+
+#13 [completed] Construire la place v4, l'installer dans Studio, tester en Play, livrer
+   build_place2 sur la base v3 → Downloads → ouvrir dans Studio → correction pivots → Ctrl+S → re-stager comme base v4 → test Play (plot, station, voitures) → rapport à Thomas.
+
+#14 [in_progress] Publier les 14 animations et coller les ID dans Stations/Reglages
+   Depuis Studio : sélection de chaque KeyframeSequence de ServerStorage/AnimationsStations, Enregistrer sur Roblox, relever l'ID ; écrire Reglages.lua ; rebuild + republier.
+
+#15 [pending] Corriger l'affichage du stock (Stock / Supply)
+   Attente de la capture de Thomas ; vérifier rafraîchissement des panneaux et affichage de l'inventaire.
+
+#16 [completed] Finir le rendu foudre de la démo (texture d'arc verticale, comparaison vidéo) et publier la démo
+   Importer Foudre_Arc_V.png, coller l'ID, rebuild Demo_Effets, tester en jeu avec captures comparées aux images de la vidéo, publier la démo (privée) sur le compte de Thomas.
+
+#17 [in_progress] Intégrer la nouvelle map (MAP_V17_4.rbxlx, MOTIFS_V17_AVEC_CHAINES_3.fbx, ARBRES_V17_2.fbx) dans le jeu
+   Analyser les nouveaux fichiers map, remplacer la map du tycoon (import FBX via Studio sur le PC de Thomas si nécessaire), garder les plots/spawns/chaînes alignés, optimiser sans changer l'apparence.
+
+#18 [pending] Intégrer le nouvel UI (StationTycoon_images_v21.zip) et le rendre responsive (PC, téléphone, tablette, console)
+   Extraire le pack UI v21, importer les images sur le compte, mettre à jour StarterGui, vérifier les erreurs (barre pas pleine largeur, fond de l'écran de chargement, affichage des constructions), tester toutes les tailles d'écran dans l'émulateur Studio.
+
+#19 [in_progress] Mutations aléatoires (foudre / or / argent) sur les voitures du tycoon + camion de livraison vérifié en jeu
+   Mutations.lua + pack Metal intégrés au build (v24/v25), bonus de paiement or x3 / argent x2 / électrique x1,5, commandes /mutation. Reste : test en jeu et vérification du camion.
+
+#20 [completed] Système économique : argent de départ et courbe de prix
+   Étudier les prix (sols, stations, caisses, employés, stock, extensions, voitures achetées) et les revenus par client ; fixer l'argent de départ pour que le joueur puisse démarrer (sol + 1 station + 1 caisse + 1 employé + stock) et ajuster les prix si besoin.
+
+#21 [pending] Optimiser la map (identique visuellement) et tester le jeu dans tous les sens ; publier la nouvelle version
+   Réduire le coût (meshes, collisions, StreamingEnabled, textures) sans changer l'aspect ; tests Play serveur+client, vérification Sortie sans erreur, publier sur Station tycoon (privé).
+
+#22 [completed] Circulation sur le plot : couloir de goudron 2 cases, obstacles physiques, vitesses réalistes
+   Module Circulation.lua (BFS sur blocs 2x2, murs, sols roulants) intégré à CarManager : stations desservies seulement si couloir entrée→station et station→sortie ; voitures ralenties à l'approche, dans le plot et dans les virages ; alerte au joueur sans route. Livré dans Station_Tycoon_v26.rbxl. À tester en jeu.
+
+#23 [completed] Étudier les nouveaux fichiers (map V17m, UI v23, camionnette cartons)
+   Extraire les scripts du rbxl camionnette, lire l'UIController v23, les scripts map V17m, CAMIONS_V17.rbxm
+
+#24 [completed] Intégrer la map V17m (scripts, import Studio, recalage, camions des garages, base v7)
+   Nouveaux InstallerMap/DonneesCollisions/DonneesArbres/Lancement + Brume V2, import FBX avec correction échelle/rotation, CAMIONS_V17.rbxm, installation, sauvegarde base v7
+
+#25 [pending] Camionnette de livraison : 3 niveaux, trajet vers le garage, animation cartons, ramassage E / logisticien
+   Livraison.lua : niveau Peu/Moyen/Plein selon le volume commandé, spawn au tunnel, trajet jusqu'au garage du plot, animation CamionCartons (portes, cartons), entrée garage, porte qui se ferme/rouvre ; cartons ramassés avec E par le joueur ou automatiquement par un employé assigné au garage (Logisticien)
+
+#26 [pending] Caméra cinématique (1 fois sur 3) + klaxon à l'arrivée de la camionnette
+   Client : quand la camionnette spawn, une fois sur trois, plan cinématique qui la filme sous plusieurs angles, 2 coups de klaxon, suivi jusqu'au garage
+
+#27 [in_progress] Circulation à droite : routes ambiance/achat, plots type B, trajets camion→garage (gen_map.py)
+   Vérifier/corriger les trajets (QueueNodes, ExitNodes, routes d'ambiance, camionnette) pour prendre les ronds-points dans le bon sens
+
+#28 [in_progress] UI v23 : importer 73 images + 2 sons, brancher le controller
+   Upload des images/sons sur le compte de Thomas via Studio, gen_ui_v23, fusion UIController (Déplacer/Supprimer avec contours rouge/bleu, familles Stock, bulle livraison, PlotView vue de haut du plot, News)
+
+#29 [completed] Construire, tester en jeu et publier (privé)
+   À la reprise : ouvrir C:\Users\ADMIN\Downloads\Station_Tycoon_v36.rbxl (rebuild 22:15 avec attributs joueur + CarAmbiance corrigé ; 4 fenêtres Studio ouvertes sur son PC, en fermer), tester en jeu (chooser de plot caméra, commande Stock → van → cartons → ramassage E, logisticien, ronds-points), corriger, importer les 73 images + 3 sons v23 (Contenus → Importer ; liste dans scratchpad/liste_v23.txt ; klaxon.ogg déjà déposé dans sons/) → liste Nom/ID, mettre l'id klaxon dans Sounds.lua, publier en privé, prévenir Thomas.
+
+#30 [completed] Recaler le quadrillage des parcelles sur les trottoirs rétrécis (routes reliées à la route centrale)
+   Depuis la réduction des trottoirs, les cases de 10 studs ne collent plus au trottoir : les routes goudron de la parcelle n'atteignent plus la route. Recalculer l'origine/étendue du quadrillage (gen_installer / PlotSpawns / Entree) pour qu'il touche exactement le trottoir.
+
+#31 [completed] Supprimer le bout de goudron surélevé avec la flèche à l'entrée des parcelles
+   Retirer la pièce de goudron surélevée avec flèche (entourée en rouge) à l'entrée de chaque parcelle (branche/Entree générée par gen_map ou gen_installer).
+
+#32 [completed] Goudron de parcelle : même texture que le goudron des routes de la map
+   Le sol "Goudron" posé en mode construction doit utiliser exactement la même texture/matériau/couleur que la voirie de MAP_V17.
+
+#33 [completed] Herbe en relief (Terrain) partout où il y a de l'herbe, nulle part ailleurs
+   L'herbe Terrain décorative manque à certains endroits (screen : bord du lac / hors zone), apparaît dans les bâtiments des stations et sur un rond-point. Recalculer les zones de remplissage Terrain Grass (InstallerMap) à partir des vraies zones herbe de la map (Sol_Herbe_*), en excluant routes, ronds-points, cours/bâtiments des parcelles.
+
+#34 [completed] Cinématique du fourgon à chaque livraison (et vérifier qu'elle se déclenche)
+   Passer cinema de 1 fois sur 3 à chaque livraison ; diagnostiquer pourquoi la caméra ne se déclenche jamais côté client (van non trouvé / événement / CameraType) et corriger.
+
+#35 [completed] Réintégrer les animations de la chaîne de production et des stations
+   Dans la v36 les animations chaîne de production / stations (publiées avant) sont absentes. Vérifier Montage/Chaine/Animations dans la base v7 et la build, réintégrer.
+
+#36 [completed] Recalculer les trajectoires des voitures avec les trottoirs rétrécis
+   Les routes d'ambiance/achat/livraison (gen_map.py) doivent utiliser la nouvelle largeur de trottoir et les voies exactes ; vérifier visuellement (routes_verif.png).
+
+#37 [completed] Rebuild, test en Studio et publication privée (v38)
+   Rebuild avec toutes les corrections, test rapide en Studio (voitures entrent sur la parcelle, herbe, cinématique), publier en privé par-dessus Station tycoon.
+
+#38 [completed] Intégrer l'UI v23 (fusion UIController designer v23 + câblage, images/sons branchés)
+   Fusion 3 voies (v21 designer → v23 designer, mon UIController câblé), remplacement de StarterGui par l'arbre v23 avec les 73 IDs d'images + 3 sons, PlotView « Ta partie » (aperçu serveur du plot), News, Move/Delete, HUD Money/XP. Build v39.
+
+#39 [completed] Audit + tests de l'algorithme de circulation (voitures 2 cases, piétons 1 case)
+   Relire Circulation.lua (BFS blocs 2x2, murs, entrée/sortie), écrire une batterie de tests (cas limites : bords, murs entre cases, chemins en L, blocs entrée ambigus), corriger les failles (ex. bloc d'entrée bx ambigu sur 3 cases), même chose pour les piétons (chemin 1 case).
+
+#40 [pending] Conduite réaliste : accélération/freinage/virages + règle « voiture rare accélère si espace libre »
+   Profil de vitesse par tronçon côté client (TWEENController / Circulation.Trajet) : accélération progressive, freinage avant virage selon l'angle, ré-accélération ; règle d'algorithme : voiture de rareté ≥ X avec N studs libres devant → boost jusqu'à rattraper la voiture devant ou quitter la map (CarAmbiance).
+
+#41 [pending] Diagnostic code (sécurité serveur, exploits) et UI manette/téléphone
+   Passer en revue les RemoteEvents/RemoteFunctions (validation serveur des arguments, propriétaire, économie), les scripts client pour manette Xbox / tactile (UI v23 : taille, boutons, sélection), corriger ce qui peut l'être, lister le reste.
+
+#42 [pending] Audit de la map en Studio (cohérence, placements, scripts) + optimisations
+   Captures Studio (vue de dessus, ronds-points, plots, chaînes, garages), vérifier terrain/herbe, brume, collisions, streaming, performances ; corriger ce qui est incohérent.
+
+#43 [pending] Tuto de démarrage cinématique (≤ 40 s) avec parcelle pré-construite
+   Nouveau joueur : plot pré-construit (sol, murs, une station, route 2 cases entrée→station→sortie, il manque quelques éléments), tuto avec plans caméra : poser l'élément manquant, assigner un employé, cases vertes (trajet voiture) et bleues (piétons) affichées, GT3 qui entre, animation station, sortie. Serveur : PlayerData starter grid ; client : script Tuto (caméra, étapes, surbrillance).
+
+#44 [pending] Propositions d'améliorations exécutées + idées de nouvelles stations + récap final
+   Après le reste : implémenter 1-3 améliorations à forte valeur ajoutée, lister des idées de stations, envoyer le récapitulatif complet avant 07h50 Toulouse.
+
+#45 [pending] v49 : camion de livraison voie de gauche, coupe le rond-point à contresens, dérapage, très rapide
+   Routes.Livraison : voie de gauche depuis le spawn, traversée du rond-point à contresens (raccourci), VITESSE élevée, dérapage (survirage + fumée) dans les virages.
+
+#46 [pending] v49 : carte goudron de retour dans Build + texture identique à la route
+   UIController : remettre la carte sol_goudron dans le menu Build (catégorie sol). Vérifier texture/couleur du modèle sol_goudron vs chaussée de la map.
+
+#47 [pending] v49 : entrée et sortie du plot déplaçables (mode Déplacer, snap grille, trottoir abaissé suit)
+   Tablier Entree/Sortie déplaçable le long du bord route en mode Déplacer (bleu), snap 15, marge 3 studs ? QueueNodes/ExitNodes/Entree node recalculés, Circulation suit, sauvegardé dans PlayerData.
+
+#48 [pending] v49 : herbe rasée à 3 studs des constructions (au lieu d'une case), herbe en trop sur le rond-point et au centre
+   PlotManager TerrainCase : anneau rase de 3 studs autour des dalles (voxels 4 → ajuster). InstallerHerbe : enlever l'herbe qui recouvre l'anneau de chaussée du rond-point central et des ronds-points extérieurs (meshes courbes).
+
+#49 [pending] v49 : quadrillage collé au trottoir (plus de bande verte) + rebord gris sur les plots d'angle ; supprimer les messages au centre de l'écran
+   gen_map : DECALAGE_U / origine de la grille pour que la première rangée touche le trottoir. Bordure grise auto sur les bords route des plots d'angle. UIController : désactiver les toasts d'alerte (attribut Alerte) au centre.
+
+#50 [pending] Construire v49, tester en Studio, livrer ; attendre le paquet V21c de l'IA map
+   build_place2.sh → Station_Tycoon_v49.rbxl + Patch_v49 ; test Play ; livraison Downloads. V21c : intégration quand le dossier de transfert complet arrive.
+
+#51 [pending] Intégrer la map V21 (paquet reçu) : plots 18×32 cases de 15, routes 50, gen_map/routes, InstallerMap V21, herbe, chaînes M4_9
+   Depuis map/V21/MAP_V17_Transfert : nouveau raster bitume depuis le FBX, gen_map.py avec plots_joueurs.json V21 (27×48 cases 10 → 18×32 cases 15, accès 50), RoutesAmbiance, Routes.Livraison (voie de gauche + rond-point à contresens), InstallerMap/DonneesCollisions/DonneesArbres V21 dans la base, herbe (zones V21 + plots 3 états), chaînes M4_9 (joints, ECHELLE_VOITURE), garages par le rond-point. Import FBX par Thomas dans Studio.
+
+#52 [completed] Écrire Tutoriel.lua (serveur : plot de départ, PNJ ItsCirly, étapes, vitrine)
+   ModuleScript ServerScriptService : construction du plot de départ via PlotManager.Place, PNJ ItsCirly, orchestration des étapes via TutorielEvent, vitrine, data.Tutoriel.
+
+#53 [completed] Écrire ClientTutoriel.lua (caméra, dialogues, cases vertes/bleues, animations PNJ)
+   LocalScript StarterPlayerScripts : plans caméra, panneau de dialogue typewriter, plaques vertes/bleues, flèche, animations R15 du PNJ, PNJ sur le toit.
+
+#54 [completed] Brancher DataManager, /tutoriel admin, gen_foudre et build v53
+   Hook OnChoosePlot (data.Tutoriel ~= true), commande admin /tutoriel, rbxmx inserts, build Station_Tycoon_v53.rbxl, lint luau.
+
+#55 [completed] Tester le tutoriel dans Studio
+   Importer v53 dans Studio, lancer /tutoriel, vérifier chaque étape, corriger.
+
+#56 [completed] Intégrer la map V21l (segments branche _B_, sortie prolongée) → base v11
+   Scripts V21l (InstallerMap + crochets, DonneesCollisions, DonneesArbres, RobotStock, PortesSas), gen_map depuis plots_joueurs.json V21l, import FBX dans Studio (×1/1.28, 180°, recalage), InstallerMap, sauvegarde Station_Tycoon_v54_base.rbxl.
+
+#57 [completed] Accès implicites : le goudron sur une case de bord ouvre le trottoir jusqu'à la route
+   Supprimer les objets Entrée/Sortie déplaçables ; Acces recalculé depuis la grille Sol (bord branche = entrées, bord route = sorties) : segments masqués, bande de goudron, rampes ; Circulation/CarManager : blocs d'entrée/sortie multiples, noeuds de file et de sortie calculés selon le bloc choisi ; ClientBuild/Admin nettoyés.
+
+#58 [completed] Demi-grille 7,5 studs pour les meubles et la déco (caisse 3 × 1 demi-cases)
+   Sous-grille Demi (2NX × 2NZ) dans le profil, masques en demi-cases pour caisses/stockage/déco (stations restent 3×3 sur la grille 15), modèles remis à l'échelle, Place/Destroy/Deplacer/SpawnPlot, caisse X/Z en demi-cases (QueuePNJ, CheminPieton), ClientBuild : cadre redécoupé en 7,5 et aimantation 7,5 pour ces objets.
+
+#59 [completed] Animation camionnette : plans caméra, drifts cohérents, roues qui tournent
+   Revoir Camion/CamionCartons.lua : caméra (supprimer le plan arrière), drift continu sur deux roues sans à-coups, rotation des roues (meshes séparés).
+
+#60 [completed] Build v54, tests Studio de l'ensemble
+   Build, import, tests : accès par goudron, demi-grille (pose caisse 22,5), tutoriel toujours OK, camion.
+
+#61 [in_progress] Rassembler l'historique du projet
+   Résumé de compaction, historique des tâches, uploads, artefacts publiés, listings du PC, en-têtes de scripts, notes du scratchpad.
+
+#62 [pending] Inventorier code, map, UI, modèles 3D et fichiers
+   Scripts (type, emplacement Explorer, rôle), Remotes, sauvegarde, map, UI, modèles, chemins sur le PC.
+
+#63 [pending] Rédiger transfert-roblox.md
+   Document autonome en 6 parties demandé par Thomas.
+
+#64 [pending] Vérifier le document et l'enregistrer dans C:\Users\ADMIN\Downloads
+   Relecture des faits (pas d'invention), puis écriture sur le PC via le pont.
+

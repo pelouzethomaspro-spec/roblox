@@ -1,0 +1,431 @@
+<roblox version="4">
+<Item class="ModuleScript"><Properties><string name="Name">Acces</string><ProtectedString name="Source">--[[ Acces (ModuleScript, ServerScriptService) — v51 / v55 : ENTREE et SORTIE DEPLACABLES du plot (demande de Thomas).
+	v55 : retour a l'objet deplacable (la variante "goudron implicite" de la v54 est gardee dans Acces.v54implicite.bak).
+	Avec la map V21l, les segments de trottoir existent des deux cotes (Trottoir_PlotN_kk et Trottoir_PlotN_B_kk) : les deux
+	acces masquent leurs segments, posent le bitume au ras de la chaussee jusqu'a la ligne de rive et des rampes aux bouts.
+	* L'ENTREE des clients est sur le bord de la BRANCHE (la route qui longe le grand cote du plot, depuis le tunnel) : les
+	  voitures descendent la branche, font la queue dessus, puis tournent dans le plot. Elle occupe 2 rangees (zE, zE + 1).
+	* La SORTIE est sur le bord de la ROUTE DU TOUR (le petit cote) : la voiture ressort sur la voie exterieure. Elle occupe
+	  2 colonnes (xS, xS + 1) de la rangee 1-2.
+	* Le joueur les deplace (onglet Construction &gt; Deplacer : clic sur le tablier, glisser le long du bord, clic) :
+	  RemoteFunction ReplicatedStorage.AccesFunction(quoi, index). Memorise dans le profil : data.Acces = {entree, sortie}.
+
+	Repere du plot (PlotCenter) : X le long de la route du tour, Z de la route du tour (rangee 1) vers le tunnel. BoolValue
+	"TypeA" du PlotSpawn : type A = branche le long du bord X = 0 (colonnes 1-2) ; type B = bord X = 270 (colonnes 17-18).
+	Conduite a droite : sur la branche, la voie qui descend vers la route du tour (file des clients) est a 12,5 de l'axe,
+	cote plot pour le type A, cote oppose pour le type B (la voiture traverse alors la voie d'en face pour entrer).
+
+	Cree a l'execution dans le PlotSpawn (et refait a chaque deplacement) :
+	  Entree               noeud dans le plot (centre du bloc 2 x 2 de l'entree ; attributs BlocX / BlocZ pour Circulation)
+	  EntreeTrottoir       noeud sur le trottoir (la voiture le franchit : au niveau du trottoir tant que la map n'a pas de
+	                       segments de trottoir cachables, au niveau de la chaussee sinon)
+	  QueueNodes/1..N      file sur la branche : 1 devant l'entree, 2 couloir, 3.. places d'attente, jusqu'au tunnel
+	  AchatNodes/1..2      voitures achetees au centre : carrefour (elles arrivent par la route du tour), puis devant l'entree
+	                       sur la voie opposee (elles tournent a gauche / a droite dans le plot)
+	  ExitNodes/1..N       1 dans le plot (BlocX / BlocZ), 2 trottoir, 3 voie exterieure, ... puis la queue FIXE du trajet
+	                       (ExitNodesFixe, cuit par gen_map_v21 : vers la fin de map ou le rond-point)
+	  AccesEntree / AccesSortie   modeles (attribut Categorie = "Acces") : tablier de bitume 30 x 30 dans le plot
+	                       ("*_Tablier", sans brins d'herbe dessous) + bande de bitume sur le trottoir ("*_Trottoir")
+	Trottoir de la map (V21d / V21j) : le trottoir du bord ROUTE DU TOUR de chaque plot est decoupe en 18 Models
+	Trottoir_PlotN_kk (k = 00..17 depuis le coin de la branche, 15 studs chacun : meshes + Part "Collision"), ranges par
+	InstallerMap dans Workspace.&lt;map&gt;.Voirie.TrottoirsPlots.PlotN. Pour la sortie, les 2 segments des colonnes de l'acces
+	sont caches (meshes + collision), le tablier est au ras de la chaussee (0,57, plaque jusque sur la ligne de rive) et deux
+	rampes (dalles 1,27 -&gt; 0,57) ferment les bouts ouverts des segments voisins. Cote BRANCHE (entree), les segments
+	Trottoir_PlotN_B_kk (k = 00..31 depuis le coin de la route du tour) sont attendus d'une prochaine map ; en attendant la
+	bande de bitume couvre le trottoir et la voiture monte dessus.
+]]
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+local Players = game:GetService("Players")
+
+local PlayerData = require(ServerScriptService:WaitForChild("PlayerData"))
+
+local Acces = {}
+
+local CASE, DEMI = 15, 7.5
+local TROTTOIR, VOIE = 15.9, 12.5          -- map V21
+local ESPACE_FILE = 30                     -- studs entre deux voitures de la file (voitures de 22 studs)
+local Z_FILE_MAX = 492                     -- fin de la file (bouche du tunnel a Z = 472,5)
+local X_QUEUE_SORTIE = { A = 180, B = 300 } -- debut de la queue fixe du trajet de sortie (gen_map_v21.X_QUEUE_SORTIE)
+local HAUTEUR_TROTTOIR = 0.70              -- chaussee 0,57 / trottoir 1,27
+local TEXTURE_BITUME = "rbxassetid://107035026496600"
+local COULEUR_BITUME = Color3.fromRGB(53, 57, 65)
+
+local NX = PlayerData.MAX_X or 18
+local ENTREE_MIN = 3                       -- rangees 1-2 : coin du carrefour (trottoir arrondi) et sortie
+local DEFAUT = { A = { entree = 4, sortie = 10 }, B = { entree = 4, sortie = 8 } }
+
+-- ----------------------------------------------------------------------------------------------------------------------
+-- geometrie
+-- ----------------------------------------------------------------------------------------------------------------------
+local function typeA(spawnFolder)
+	local v = spawnFolder:FindFirstChild("TypeA")
+	if v and v:IsA("BoolValue") then return v.Value end
+	-- ancien PlotSpawn sans TypeA : la branche est du cote du tunnel
+	local pc, t = spawnFolder:FindFirstChild("PlotCenter"), spawnFolder:FindFirstChild("Tunnel")
+	if pc and t then return pc.CFrame:PointToObjectSpace(t.Position).X &lt; NX * CASE / 2 end
+	return true
+end
+
+-- G = { pc, A (bool), cote (-1 : branche en X &lt; 0 / +1 : X &gt; 270), bxE (colonne du bloc d'entree), Xq (voie de la file),
+--       Xa (voie opposee), Xtrot (milieu du trottoir de la branche), Zn / Zf (voies exterieure / interieure de la route du
+--       tour), Ztrot, yPlot (dessus des dalles), interdites }
+function Acces.Geometrie(spawnFolder)
+	local pc = spawnFolder:FindFirstChild("PlotCenter")
+	if not pc then return nil end
+	local A = typeA(spawnFolder)
+	local cote = A and -1 or 1
+	local xBord = A and 0 or NX * CASE
+	local xBranche = xBord + cote * (TROTTOIR + 25)
+	local G = {
+		pc = pc, A = A, cote = cote, lettre = A and "A" or "B",
+		bxE = A and 1 or NX - 1,
+		Xq = xBranche + VOIE, Xa = xBranche - VOIE, Xtrot = xBord + cote * TROTTOIR / 2,
+		Zn = -DEMI - TROTTOIR - VOIE, Zf = -DEMI - TROTTOIR - 3 * VOIE, Ztrot = -DEMI - TROTTOIR / 2,
+		yPlot = pc.Position.Y + 0.75,
+		interdites = {},
+	}
+	local sv = spawnFolder:FindFirstChild("CasesInterdites")
+	if sv and sv:IsA("StringValue") then
+		for cx, cz in string.gmatch(sv.Value, "(%d+),(%d+)") do G.interdites[tonumber(cx) .. "_" .. tonumber(cz)] = true end
+	end
+	return G
+end
+
+local function monde(G, x, z, y)
+	local p = G.pc.CFrame:PointToWorldSpace(Vector3.new(x, 0, z))
+	return Vector3.new(p.X, y or G.yPlot, p.Z)
+end
+local function dirMonde(G, dx, dz)
+	return G.pc.CFrame:VectorToWorldSpace(Vector3.new(dx, 0, dz)).Unit
+end
+local function cfVers(p, d) return CFrame.lookAt(p, p + d) end
+
+-- ----------------------------------------------------------------------------------------------------------------------
+-- profil
+-- ----------------------------------------------------------------------------------------------------------------------
+function Acces.Lire(player, spawnFolder)
+	local data = PlayerData.GetData(player)
+	local G = Acces.Geometrie(spawnFolder)
+	if not (data and G) then return nil end
+	if type(data.Acces) ~= "table" then data.Acces = {} end
+	local d = DEFAUT[G.lettre]
+	local nz = select(2, PlayerData.GetPlotSize(player)) or PlayerData.MAX_Z
+	local e, s = tonumber(data.Acces.entree) or d.entree, tonumber(data.Acces.sortie) or d.sortie
+	e = math.clamp(math.floor(e), ENTREE_MIN, math.max(ENTREE_MIN, nz - 1))
+	s = math.clamp(math.floor(s), 1, NX - 1)
+	data.Acces.entree, data.Acces.sortie = e, s
+	return e, s, G
+end
+
+-- validite d'une position ; renvoie true ou false, raison
+function Acces.Valide(player, spawnFolder, quoi, index)
+	local G = Acces.Geometrie(spawnFolder)
+	if not G then return false, "plot inconnu" end
+	index = tonumber(index)
+	if not index or index ~= math.floor(index) then return false, "position invalide" end
+	local nz = select(2, PlayerData.GetPlotSize(player)) or 11
+	if quoi == "Entree" then
+		if index &lt; ENTREE_MIN then return false, "trop pres du carrefour" end
+		if index + 1 &gt; nz then return false, "hors du terrain (agrandis-le d'abord)" end
+		return true
+	elseif quoi == "Sortie" then
+		if index &lt; 1 or index + 1 &gt; NX then return false, "hors du terrain" end
+		-- pas contre la branche (coin du carrefour : la colonne 1 pour le type A, la colonne 18 pour le type B)
+		if G.A and index &lt; 2 then return false, "trop pres du carrefour" end
+		if not G.A and index + 1 &gt; NX - 2 then return false, "trop pres du carrefour" end
+		for _, c in ipairs({{index, 1}, {index + 1, 1}, {index, 2}, {index + 1, 2}}) do
+			if G.interdites[c[1] .. "_" .. c[2]] then return false, "la route du tour passe ici (coin du plot)" end
+		end
+		return true
+	end
+	return false, "acces inconnu"
+end
+
+-- ----------------------------------------------------------------------------------------------------------------------
+-- segments de trottoir de la map : Models Trottoir_PlotN_kk (bord route du tour, V21d) et Trottoir_PlotN_B_kk (bord
+-- branche, a venir). Index : segments[nomPlot].R[k] / .B[k] = Model (ou liste de BaseParts pour une map plus ancienne).
+-- ----------------------------------------------------------------------------------------------------------------------
+local segments = nil
+local function indexerSegments()
+	if segments then return segments end
+	segments = {}
+	local t0 = os.clock()
+	local function ajouter(plot, cote, idx, inst)
+		segments[plot] = segments[plot] or { B = {}, R = {} }
+		local liste = segments[plot][cote]
+		liste[idx] = liste[idx] or {}
+		table.insert(liste[idx], inst)
+	end
+	-- 1. ranges par InstallerMap : &lt;map&gt;.Voirie.TrottoirsPlots.PlotN.&lt;Model&gt;
+	local n = 0
+	for _, d in ipairs(workspace:GetDescendants()) do
+		if d:IsA("Model") then
+			local plot, idx = string.match(d.Name, "^Trottoir_(Plot%d+)_(%d+)$")
+			local cote = "R"
+			if not plot then plot, idx = string.match(d.Name, "^Trottoir_(Plot%d+)_B_(%d+)$"); cote = "B" end
+			if plot then ajouter(plot, cote, tonumber(idx), d); n += 1 end
+		end
+	end
+	-- 2. map pas encore passee par InstallerMap : les MeshParts isoles portent le meme nom (plus un suffixe __Texture)
+	if n == 0 then
+		for _, d in ipairs(workspace:GetDescendants()) do
+			if d:IsA("BasePart") then
+				local plot, idx = string.match(d.Name, "^Trottoir_(Plot%d+)_(%d+)")
+				local cote = "R"
+				if not plot then plot, idx = string.match(d.Name, "^Trottoir_(Plot%d+)_B_(%d+)"); cote = "B" end
+				if plot then ajouter(plot, cote, tonumber(idx), d); n += 1 end
+			end
+		end
+	end
+	if n &gt; 0 then print(("[Acces] %d segments de trottoir cachables indexes (%.2f s)"):format(n, os.clock() - t0)) end
+	return segments
+end
+-- segments (Models ou Parts) couvrant les 2 cases de l'acces : k est l'index du segment dans la numerotation de la map
+-- (bord route : depuis le coin de la branche ; bord branche : depuis le coin de la route du tour)
+local function segmentsDe(spawnFolder, cote, k0)
+	local s = indexerSegments()[spawnFolder.Name]
+	local out = {}
+	if s then
+		for k = k0, k0 + 1 do for _, p in ipairs(s[cote][k] or {}) do table.insert(out, p) end end
+	end
+	return out
+end
+local function cacherPart(part, oui)
+	if oui then
+		if part:GetAttribute("AccesCache") == nil then
+			part:SetAttribute("AccesCache", part.Transparency)
+			part:SetAttribute("AccesCollide", part.CanCollide)
+		end
+		part.Transparency = 1; part.CanCollide = false; part.CanQuery = false
+	elseif part:GetAttribute("AccesCache") ~= nil then
+		part.Transparency = part:GetAttribute("AccesCache"); part.CanCollide = part:GetAttribute("AccesCollide") ~= false; part.CanQuery = true
+		part:SetAttribute("AccesCache", nil); part:SetAttribute("AccesCollide", nil)
+	end
+end
+local function cacher(inst, oui)
+	if inst:IsA("BasePart") then cacherPart(inst, oui) end
+	for _, d in ipairs(inst:GetDescendants()) do if d:IsA("BasePart") then cacherPart(d, oui) end end
+end
+
+-- ----------------------------------------------------------------------------------------------------------------------
+-- construction
+-- ----------------------------------------------------------------------------------------------------------------------
+local function noeud(parent, nom, cf, attrs)
+	local p = Instance.new("Part")
+	p.Name = nom; p.Size = Vector3.new(1, 1, 1); p.Transparency = 1; p.Anchored = true
+	p.CanCollide = false; p.CanQuery = false; p.CanTouch = false; p.CastShadow = false
+	p.CFrame = cf
+	for k, v in pairs(attrs or {}) do p:SetAttribute(k, v) end
+	p.Parent = parent
+	return p
+end
+local function dossier(parent, nom)
+	local f = parent:FindFirstChild(nom)
+	if f then f:Destroy() end
+	f = Instance.new("Folder"); f.Name = nom; f.Parent = parent
+	return f
+end
+local function bitume(parent, nom, cf, taille)
+	local p = Instance.new("Part")
+	p.Name = nom; p.Size = taille; p.CFrame = cf; p.Anchored = true
+	p.CanCollide = true; p.CanQuery = true; p.CanTouch = false; p.CastShadow = false
+	p.Material = Enum.Material.SmoothPlastic; p.Color = COULEUR_BITUME
+	p.TopSurface = Enum.SurfaceType.Smooth; p.BottomSurface = Enum.SurfaceType.Smooth
+	local t = Instance.new("Texture"); t.Name = "Bitume"; t.Face = Enum.NormalId.Top; t.Texture = TEXTURE_BITUME
+	t.StudsPerTileU = 10; t.StudsPerTileV = 10; t.Parent = p
+	p.Parent = parent
+	return p
+end
+
+-- cases (x, z) occupees par les tabliers (pour PlotManager : sol sans brins)
+function Acces.Cases(player, spawnFolder)
+	local e, s, G = Acces.Lire(player, spawnFolder)
+	if not G then return {} end
+	return { {G.bxE, e}, {G.bxE + 1, e}, {G.bxE, e + 1}, {G.bxE + 1, e + 1}, {s, 1}, {s + 1, 1}, {s, 2}, {s + 1, 2} }
+end
+
+-- (re)construit noeuds, tabliers et trottoirs d'apres le profil
+function Acces.Appliquer(player, spawnFolder)
+	local e, s, G = Acces.Lire(player, spawnFolder)
+	if not G then return false end
+	local yT = G.yPlot + HAUTEUR_TROTTOIR          -- dessus du trottoir de la map
+	-- --- segments de trottoir : on remontre tout ce qu'on avait cache pour ce plot, puis on cache ceux des acces ---
+	local segs = indexerSegments()[spawnFolder.Name]
+	if segs then
+		for _, cote in ipairs({"B", "R"}) do for _, l in pairs(segs[cote]) do for _, p in ipairs(l) do cacher(p, false) end end end
+	end
+	-- bord route (sortie) : segment k couvre U = 15k..15k+15 depuis le coin de la branche ; colonne c -&gt; k = c - 1 (type A)
+	-- ou k = 18 - c (type B, X = 270 - U). Bord branche (entree) : k = rangee - 1 (numerotation attendue).
+	local kS = G.A and (s - 1) or (NX - s - 1)
+	local segE, segS = segmentsDe(spawnFolder, "B", e - 1), segmentsDe(spawnFolder, "R", kS)
+	for _, p in ipairs(segE) do cacher(p, true) end
+	for _, p in ipairs(segS) do cacher(p, true) end
+	local yTrotE = (#segE &gt; 0) and G.yPlot or yT          -- la voiture passe au ras de la chaussee si le trottoir est cache
+	local yTrotS = (#segS &gt; 0) and G.yPlot or yT
+
+	-- --- ENTREE : bloc (bxE, e) ---
+	local zE = CASE * e - DEMI
+	local versPlot = dirMonde(G, -G.cote, 0)               -- de la branche vers l'interieur du plot
+	local versRoute = dirMonde(G, 0, -1)                   -- sens de la file (vers la route du tour)
+	for _, n in ipairs({"Entree", "EntreeTrottoir", "QueueNodes", "AchatNodes", "ExitNodes", "AccesEntree", "AccesSortie", "Entrees", "Sorties", "Passage", "Ouvertures"}) do
+		local old = spawnFolder:FindFirstChild(n); if old then old:Destroy() end
+	end
+	local nE = noeud(spawnFolder, "Entree", cfVers(monde(G, CASE * G.bxE, zE), versPlot), { BlocX = G.bxE, BlocZ = e, Index = e })
+	noeud(spawnFolder, "EntreeTrottoir", cfVers(monde(G, G.Xtrot, zE, yTrotE), versPlot))
+	noeud(nE, "Trottoir", cfVers(monde(G, G.Xtrot, zE, yTrotE), versPlot))                 -- (v54) enfants lus par CarManager
+	noeud(nE, "Achat", cfVers(monde(G, G.Xa, zE - 22), dirMonde(G, 0, 1)))
+	local file = dossier(spawnFolder, "QueueNodes")
+	local k, z = 1, zE
+	while z &lt;= Z_FILE_MAX do
+		noeud(file, tostring(k), cfVers(monde(G, G.Xq, z), versRoute))
+		k += 1; z += ESPACE_FILE
+	end
+	local achat = dossier(spawnFolder, "AchatNodes")
+	local versTunnel = dirMonde(G, 0, 1)
+	noeud(achat, "1", cfVers(monde(G, G.Xa, G.A and G.Zn or G.Zf), versTunnel))      -- carrefour : on tourne dans la branche
+	noeud(achat, "2", cfVers(monde(G, G.Xa, zE - 22), versTunnel))                    -- juste avant l'entree, voie opposee
+
+	-- --- SORTIE : bloc (s, 1) ---
+	local xS = CASE * s
+	local sortie = dossier(spawnFolder, "ExitNodes")
+	noeud(sortie, "1", cfVers(monde(G, xS, DEMI), versRoute), { BlocX = s, BlocZ = 1, Index = s })
+	noeud(sortie, "2", cfVers(monde(G, xS, G.Ztrot, yTrotS), versRoute))
+	local plusX = dirMonde(G, 1, 0)
+	noeud(sortie, "3", cfVers(monde(G, xS, G.Zn), plusX))
+	local n, x = 4, xS + 35
+	local xFixe = X_QUEUE_SORTIE[G.lettre]
+	while x &lt; xFixe - 25 do
+		noeud(sortie, tostring(n), cfVers(monde(G, x, G.Zn), plusX)); n += 1; x += 35
+	end
+	local fixe = spawnFolder:FindFirstChild("ExitNodesFixe")
+	if fixe then
+		local i = 1
+		local src = fixe:FindFirstChild(tostring(i))
+		while src do
+			local c = src:Clone(); c.Name = tostring(n); c.Parent = sortie
+			n += 1; i += 1; src = fixe:FindFirstChild(tostring(i))
+		end
+	end
+
+	-- --- PASSAGE (v54 : voitures qui ne s'arretent pas) : voie exterieure depuis le carrefour, puis la queue fixe ---
+	do
+		local passage = dossier(spawnFolder, "Passage")
+		local xDepart = G.A and 2 * CASE or (NX - 2) * CASE
+		noeud(passage, "1", cfVers(monde(G, xDepart, G.Zn), plusX))
+		local np, xp = 2, xDepart + 35
+		while xp &lt; xFixe - 25 do
+			noeud(passage, tostring(np), cfVers(monde(G, xp, G.Zn), plusX)); np += 1; xp += 35
+		end
+		if fixe then
+			local i = 1
+			local src = fixe:FindFirstChild(tostring(i))
+			while src do
+				local c = src:Clone(); c.Name = tostring(np); c.Parent = passage
+				np += 1; i += 1; src = fixe:FindFirstChild(tostring(i))
+			end
+		end
+	end
+
+	-- --- TABLIERS ---
+	local rot = G.pc.CFrame - G.pc.CFrame.Position
+	local COULEUR_DALLE = Color3.fromRGB(203, 198, 184)
+	local RAMPE = 6                                        -- longueur des rampes (le long du bord) quand le trottoir est cache
+	-- modele d'un acces : tablier 30 x 30 dans le plot + bande sur le trottoir (+ rampes si les segments sont caches)
+	--   axeBord : vecteur local le long du bord (X pour la sortie, Z pour l'entree) ; versRoute : vecteur local du plot vers la route
+	local function modeleAcces(nom, quoi, index, centreLocal, trottoirLocal, axeBord, versRoute, ouvert, yTrot)
+		local m = Instance.new("Model"); m.Name = nom
+		m:SetAttribute("Categorie", "Acces"); m:SetAttribute("Acces", quoi); m:SetAttribute("Index", index)
+		local cT = monde(G, centreLocal.X, centreLocal.Z, G.yPlot - 0.02 - 0.14)         -- dessus a 0,55 : une dalle posee dessus gagne
+		local tab = bitume(m, nom .. "_Tablier", CFrame.new(cT) * rot, Vector3.new(2 * CASE, 0.28, 2 * CASE))
+		-- bande sur le trottoir : au ras de la chaussee si le trottoir est cache (deborde de 2,5 sur la ligne de rive), sinon
+		-- par-dessus le trottoir (provisoire)
+		local largeurTrot = TROTTOIR + (ouvert and 2.6 or 0.2)
+		local decal = ouvert and 1.3 or 0
+		local cS = monde(G, trottoirLocal.X + versRoute.X * decal, trottoirLocal.Z + versRoute.Z * decal, yTrot + 0.01 - 0.15)
+		local tailleS = (math.abs(axeBord.X) &gt; 0.5) and Vector3.new(2 * CASE, 0.3, largeurTrot) or Vector3.new(largeurTrot, 0.3, 2 * CASE)
+		bitume(m, nom .. "_Trottoir", CFrame.new(cS) * rot, tailleS)
+		if ouvert then
+			-- rampes aux deux bouts de l'ouverture : dalles 1,27 -&gt; 0,57 sur RAMPE studs, qui bouchent les coupes des segments voisins
+			for _, sens in ipairs({-1, 1}) do
+				local bordLocal = Vector3.new(trottoirLocal.X + axeBord.X * sens * (CASE - RAMPE / 2), 0, trottoirLocal.Z + axeBord.Z * sens * (CASE - RAMPE / 2))
+				local haut = HAUTEUR_TROTTOIR
+				local centre = monde(G, bordLocal.X, bordLocal.Z, G.yPlot + haut / 2)
+				local w = Instance.new("WedgePart")
+				w.Name = nom .. "_Rampe" .. (sens &gt; 0 and "P" or "M")
+				w.Size = Vector3.new(TROTTOIR, haut, RAMPE)
+				-- WedgePart : face verticale a l'arriere (+Z local), pente qui descend vers l'avant (-Z) : l'avant regarde l'ouverture
+				local versOuverture = dirMonde(G, -axeBord.X * sens, -axeBord.Z * sens)
+				w.CFrame = CFrame.lookAt(centre, centre + versOuverture)
+				w.Anchored = true; w.CanCollide = true; w.CanQuery = true; w.CanTouch = false; w.CastShadow = false
+				w.Material = Enum.Material.Concrete; w.Color = COULEUR_DALLE
+				w.Parent = m
+			end
+		end
+		m.PrimaryPart = tab
+		m.WorldPivot = CFrame.new(monde(G, centreLocal.X, centreLocal.Z)) * rot
+		m.Parent = spawnFolder
+		return m
+	end
+	modeleAcces("AccesEntree", "Entree", e, Vector3.new(CASE * G.bxE, 0, zE), Vector3.new(G.Xtrot, 0, zE), Vector3.new(0, 0, 1), Vector3.new(G.cote, 0, 0), #segE &gt; 0, yTrotE)
+	modeleAcces("AccesSortie", "Sortie", s, Vector3.new(xS, 0, DEMI), Vector3.new(xS, 0, G.Ztrot), Vector3.new(1, 0, 0), Vector3.new(0, 0, -1), #segS &gt; 0, yTrotS)
+	return true
+end
+
+-- ----------------------------------------------------------------------------------------------------------------------
+-- deplacement (RemoteFunction AccesFunction(quoi, index))
+-- ----------------------------------------------------------------------------------------------------------------------
+local PlotManager = nil
+local function plotManager()
+	if PlotManager == nil then
+		local ok, m = pcall(function() return require(ServerScriptService:WaitForChild("PlotManager", 10)) end)
+		PlotManager = ok and m or false
+	end
+	return PlotManager or nil
+end
+
+function Acces.Deplacer(player, quoi, index)
+	local PM = plotManager()
+	local spawnFolder = PM and PM.SpawnFolderDe and PM.SpawnFolderDe(player)
+	if not spawnFolder then return false, "pas de plot" end
+	local ok, raison = Acces.Valide(player, spawnFolder, quoi, index)
+	if not ok then return false, raison end
+	local data = PlayerData.GetData(player)
+	if not data then return false, "donnees indisponibles" end
+	local avant = Acces.Cases(player, spawnFolder)
+	if type(data.Acces) ~= "table" then data.Acces = {} end
+	if quoi == "Entree" then data.Acces.entree = index else data.Acces.sortie = index end
+	Acces.Appliquer(player, spawnFolder)
+	-- terrain : plus de brins sous les nouveaux tabliers, herbe a nouveau sous les anciens
+	if PM and PM.RefaireTerrainCases then
+		local cases = Acces.Cases(player, spawnFolder)
+		for _, c in ipairs(avant) do table.insert(cases, c) end
+		pcall(PM.RefaireTerrainCases, player, cases)
+	end
+	return true
+end
+
+-- (compat v54) : appele par PlotManager apres un changement de sol ; avec les acces deplacables il n'y a rien a refaire
+function Acces.Rafraichir() return false end
+
+-- resume lisible (commande admin /acces sans argument)
+function Acces.Resume(player, spawnFolder)
+	local e, s, G = Acces.Lire(player, spawnFolder)
+	if not G then return "plot inconnu" end
+	return ("type %s | entree : rangees %d-%d | sortie : colonnes %d-%d"):format(G.lettre, e, e + 1, s, s + 1)
+end
+
+do
+	local f = ReplicatedStorage:FindFirstChild("AccesFunction")
+	if not f then f = Instance.new("RemoteFunction"); f.Name = "AccesFunction"; f.Parent = ReplicatedStorage end
+	f.OnServerInvoke = function(player, quoi, index)
+		if typeof(player) ~= "Instance" or not player:IsA("Player") then return false, "?" end
+		if quoi ~= "Entree" and quoi ~= "Sortie" then return false, "acces inconnu" end
+		local ok, raison = Acces.Deplacer(player, quoi, tonumber(index))
+		return ok, raison
+	end
+end
+
+return Acces
+</ProtectedString></Properties></Item>
+</roblox>

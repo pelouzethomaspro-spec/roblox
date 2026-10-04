@@ -1,0 +1,384 @@
+--[[ Acces (ModuleScript, ServerScriptService) — v54 : ACCES IMPLICITES PAR LE GOUDRON (regle de Thomas).
+	Plus d'objets Entree / Sortie deplacables : c'est le GOUDRON pose sur une case de BORD du plot qui ouvre le trottoir
+	devant elle, jusqu'a la route : le segment de trottoir de la map est masque, une bande de bitume au ras de la chaussee
+	comble le trou, et deux rampes ferment les bouts des segments voisins. Enlever le goudron referme le trottoir.
+	* bord BRANCHE (le grand cote, X = 0 pour un plot de type A / X = 270 pour un type B ; colonne 1 ou 18) : ENTREES des
+	  clients (rangees >= 3 : les rangees 1-2 touchent le coin du carrefour). Les voitures descendent la branche, font la
+	  queue, et entrent par un bloc 2 x 2 de goudron ouvert (2 rangees de bord goudronnees cote a cote).
+	* bord ROUTE DU TOUR (rangee 1) : SORTIES (toute colonne sauf celle du coin et les cases interdites). La voiture ressort
+	  par un bloc 2 x 2 ouvert (2 colonnes de bord goudronnees cote a cote) sur la voie exterieure.
+	Plusieurs entrees / sorties sont possibles : Circulation essaie tous les blocs ouverts (StationDesservie, CheminSortie).
+
+	Cree a l'execution dans le PlotSpawn (refait a chaque changement de goudron sur un bord : PlotManager -> Acces.Rafraichir) :
+	  Entrees/<bz>          noeud dans le plot au centre du bloc d'entree (attributs BlocX / BlocZ) ; enfants :
+	                        Trottoir (noeud sur le trottoir, au ras de la chaussee) et Achat (devant l'entree, voie opposee)
+	  Entree                copie du noeud de l'entree PRINCIPALE (la plus proche du tunnel : la premiere rencontree)
+	  QueueNodes/1..N       file sur la branche a partir de l'entree principale jusqu'au tunnel
+	  AchatNodes/1          carrefour (voitures achetees au centre : elles arrivent par la route du tour)
+	  Sorties/<bx>/1..N     1 dans le plot (BlocX / BlocZ), 2 trottoir, 3 voie exterieure, ... puis la queue FIXE du trajet
+	  ExitNodes/1..N        copie de la sortie PRINCIPALE (la premiere colonne ouverte depuis la branche)
+	  Passage/1..N          trajet des voitures qui ne s'arretent pas (pas de station) : voie exterieure puis queue fixe
+	  Ouvertures            bandes de bitume sur le trottoir + rampes
+	Segments de trottoir de la map (V21k/V21l) : Trottoir_PlotN_kk (bord route, k = colonne - 1 pour A / 18 - colonne pour
+	B) et Trottoir_PlotN_B_kk (bord branche, k = rangee - 1), ranges par InstallerMap dans Workspace.<map>.Voirie.TrottoirsPlots.
+]]
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local PlayerData = require(ServerScriptService:WaitForChild("PlayerData"))
+local Circulation = require(ServerScriptService:WaitForChild("Circulation"))
+
+local Acces = {}
+
+local CASE, DEMI = 15, 7.5
+local TROTTOIR, VOIE = 15.9, 12.5          -- map V21
+local ESPACE_FILE = 30                     -- studs entre deux voitures de la file (voitures de 22 studs)
+local Z_FILE_MAX = 492                     -- fin de la file (bouche du tunnel a Z = 472,5)
+local X_QUEUE_SORTIE = { A = 180, B = 300 } -- debut de la queue fixe du trajet de sortie (gen_map_v21.X_QUEUE_SORTIE)
+local HAUTEUR_TROTTOIR = 0.70              -- chaussee 0,57 / trottoir 1,27
+local TEXTURE_BITUME = "rbxassetid://107035026496600"
+local COULEUR_BITUME = Color3.fromRGB(53, 57, 65)
+local COULEUR_DALLE = Color3.fromRGB(203, 198, 184)
+local RAMPE = 6                            -- longueur des rampes le long du bord
+
+local NX = PlayerData.MAX_X or 18
+local ENTREE_MIN = 3                       -- rangees 1-2 : coin du carrefour (trottoir arrondi)
+local ENTREE_DEFAUT = 4                    -- file des clients quand aucune entree n'est ouverte (les voitures passent)
+
+-- ----------------------------------------------------------------------------------------------------------------------
+-- geometrie
+-- ----------------------------------------------------------------------------------------------------------------------
+local function typeA(spawnFolder)
+	local v = spawnFolder:FindFirstChild("TypeA")
+	if v and v:IsA("BoolValue") then return v.Value end
+	local pc, t = spawnFolder:FindFirstChild("PlotCenter"), spawnFolder:FindFirstChild("Tunnel")
+	if pc and t then return pc.CFrame:PointToObjectSpace(t.Position).X < NX * CASE / 2 end
+	return true
+end
+
+-- G = { pc, A (bool), cote (-1 : branche en X < 0 / +1 : X > 270), xE (colonne de bord cote branche), bxE (colonne du bloc
+--       d'entree), Xq (voie de la file), Xa (voie opposee), Xtrot (milieu du trottoir de la branche), Zn / Zf (voies
+--       exterieure / interieure de la route du tour), Ztrot, yPlot (dessus des dalles), interdites }
+function Acces.Geometrie(spawnFolder)
+	local pc = spawnFolder:FindFirstChild("PlotCenter")
+	if not pc then return nil end
+	local A = typeA(spawnFolder)
+	local cote = A and -1 or 1
+	local xBord = A and 0 or NX * CASE
+	local xBranche = xBord + cote * (TROTTOIR + 25)
+	local G = {
+		pc = pc, A = A, cote = cote, lettre = A and "A" or "B",
+		xE = A and 1 or NX, bxE = A and 1 or NX - 1, xCoin = A and 1 or NX,
+		Xq = xBranche + VOIE, Xa = xBranche - VOIE, Xtrot = xBord + cote * TROTTOIR / 2,
+		Zn = -DEMI - TROTTOIR - VOIE, Zf = -DEMI - TROTTOIR - 3 * VOIE, Ztrot = -DEMI - TROTTOIR / 2,
+		yPlot = pc.Position.Y + 0.75,
+		interdites = {},
+	}
+	local sv = spawnFolder:FindFirstChild("CasesInterdites")
+	if sv and sv:IsA("StringValue") then
+		for cx, cz in string.gmatch(sv.Value, "(%d+),(%d+)") do G.interdites[tonumber(cx) .. "_" .. tonumber(cz)] = true end
+	end
+	return G
+end
+
+local function monde(G, x, z, y)
+	local p = G.pc.CFrame:PointToWorldSpace(Vector3.new(x, 0, z))
+	return Vector3.new(p.X, y or G.yPlot, p.Z)
+end
+local function dirMonde(G, dx, dz)
+	return G.pc.CFrame:VectorToWorldSpace(Vector3.new(dx, 0, dz)).Unit
+end
+local function cfVers(p, d) return CFrame.lookAt(p, p + d) end
+
+-- ----------------------------------------------------------------------------------------------------------------------
+-- ouvertures d'apres la grille des sols
+-- ----------------------------------------------------------------------------------------------------------------------
+local function roulante(grid, x, z)
+	local c = grid[x] and grid[x][z]
+	return c ~= nil and Circulation.SolRoulant(c.Sol)
+end
+
+-- rangees de bord ouvertes cote branche (E[z] = true) et colonnes de bord ouvertes cote route (S[x] = true)
+function Acces.Ouvertures(player, spawnFolder)
+	local G = Acces.Geometrie(spawnFolder)
+	local grid = PlayerData.GetGrid(player)
+	local nx, nz = PlayerData.GetPlotSize(player)
+	if not (G and grid and nx and nz) then return {}, {}, G end
+	local E, S = {}, {}
+	for z = ENTREE_MIN, nz do
+		if roulante(grid, G.xE, z) and not G.interdites[G.xE .. "_" .. z] then E[z] = true end
+	end
+	for x = 1, nx do
+		if x ~= G.xCoin and roulante(grid, x, 1) and not G.interdites[x .. "_1"] then S[x] = true end
+	end
+	return E, S, G
+end
+
+-- blocs 2 x 2 ouverts : entrees = liste de bz (rangees bz, bz + 1 ouvertes), sorties = liste de bx (colonnes bx, bx + 1)
+function Acces.Blocs(player, spawnFolder)
+	local E, S, G = Acces.Ouvertures(player, spawnFolder)
+	local entrees, sorties = {}, {}
+	for z in pairs(E) do if E[z + 1] then table.insert(entrees, z) end end
+	for x in pairs(S) do if S[x + 1] then table.insert(sorties, x) end end
+	table.sort(entrees); table.sort(sorties)
+	return entrees, sorties, G, E, S
+end
+
+-- ----------------------------------------------------------------------------------------------------------------------
+-- segments de trottoir de la map : Models Trottoir_PlotN_kk (bord route) et Trottoir_PlotN_B_kk (bord branche).
+-- Index : segments[nomPlot].R[k] / .B[k] = liste d'instances (Model, ou BaseParts pour une map plus ancienne).
+-- ----------------------------------------------------------------------------------------------------------------------
+local segments = nil
+local function indexerSegments()
+	if segments then return segments end
+	segments = {}
+	local t0 = os.clock()
+	local function ajouter(plot, cote, idx, inst)
+		segments[plot] = segments[plot] or { B = {}, R = {} }
+		local liste = segments[plot][cote]
+		liste[idx] = liste[idx] or {}
+		table.insert(liste[idx], inst)
+	end
+	local n = 0
+	for _, d in ipairs(workspace:GetDescendants()) do
+		if d:IsA("Model") then
+			local plot, idx = string.match(d.Name, "^Trottoir_(Plot%d+)_(%d+)$")
+			local cote = "R"
+			if not plot then plot, idx = string.match(d.Name, "^Trottoir_(Plot%d+)_B_(%d+)$"); cote = "B" end
+			if plot then ajouter(plot, cote, tonumber(idx), d); n += 1 end
+		end
+	end
+	if n == 0 then
+		for _, d in ipairs(workspace:GetDescendants()) do
+			if d:IsA("BasePart") then
+				local plot, idx = string.match(d.Name, "^Trottoir_(Plot%d+)_(%d+)")
+				local cote = "R"
+				if not plot then plot, idx = string.match(d.Name, "^Trottoir_(Plot%d+)_B_(%d+)"); cote = "B" end
+				if plot then ajouter(plot, cote, tonumber(idx), d); n += 1 end
+			end
+		end
+	end
+	if n > 0 then print(("[Acces] %d segments de trottoir cachables indexes (%.2f s)"):format(n, os.clock() - t0)) end
+	return segments
+end
+local function segmentsDe(spawnFolder, cote, k)
+	local s = indexerSegments()[spawnFolder.Name]
+	return (s and s[cote][k]) or {}
+end
+local function cacherPart(part, oui)
+	if oui then
+		if part:GetAttribute("AccesCache") == nil then
+			part:SetAttribute("AccesCache", part.Transparency)
+			part:SetAttribute("AccesCollide", part.CanCollide)
+		end
+		part.Transparency = 1; part.CanCollide = false; part.CanQuery = false
+	elseif part:GetAttribute("AccesCache") ~= nil then
+		part.Transparency = part:GetAttribute("AccesCache"); part.CanCollide = part:GetAttribute("AccesCollide") ~= false; part.CanQuery = true
+		part:SetAttribute("AccesCache", nil); part:SetAttribute("AccesCollide", nil)
+	end
+end
+local function cacher(inst, oui)
+	if inst:IsA("BasePart") then cacherPart(inst, oui) end
+	for _, d in ipairs(inst:GetDescendants()) do if d:IsA("BasePart") then cacherPart(d, oui) end end
+end
+
+-- ----------------------------------------------------------------------------------------------------------------------
+-- construction
+-- ----------------------------------------------------------------------------------------------------------------------
+local function noeud(parent, nom, cf, attrs)
+	local p = Instance.new("Part")
+	p.Name = nom; p.Size = Vector3.new(1, 1, 1); p.Transparency = 1; p.Anchored = true
+	p.CanCollide = false; p.CanQuery = false; p.CanTouch = false; p.CastShadow = false
+	p.CFrame = cf
+	for k, v in pairs(attrs or {}) do p:SetAttribute(k, v) end
+	p.Parent = parent
+	return p
+end
+local function dossier(parent, nom)
+	local f = parent:FindFirstChild(nom)
+	if f then f:Destroy() end
+	f = Instance.new("Folder"); f.Name = nom; f.Parent = parent
+	return f
+end
+local function bitume(parent, nom, cf, taille)
+	local p = Instance.new("Part")
+	p.Name = nom; p.Size = taille; p.CFrame = cf; p.Anchored = true
+	p.CanCollide = true; p.CanQuery = true; p.CanTouch = false; p.CastShadow = false
+	p.Material = Enum.Material.SmoothPlastic; p.Color = COULEUR_BITUME
+	p.TopSurface = Enum.SurfaceType.Smooth; p.BottomSurface = Enum.SurfaceType.Smooth
+	local t = Instance.new("Texture"); t.Name = "Bitume"; t.Face = Enum.NormalId.Top; t.Texture = TEXTURE_BITUME
+	t.StudsPerTileU = 10; t.StudsPerTileV = 10; t.Parent = p
+	p.Parent = parent
+	return p
+end
+-- rampe (dalles 1,27 -> 0,57 sur RAMPE studs) dont la pente descend vers `versOuverture`
+local function rampe(parent, nom, G, centreLocal, versOuvertureLocal)
+	local centre = monde(G, centreLocal.X, centreLocal.Z, G.yPlot + HAUTEUR_TROTTOIR / 2)
+	local w = Instance.new("WedgePart")
+	w.Name = nom
+	w.Size = Vector3.new(TROTTOIR, HAUTEUR_TROTTOIR, RAMPE)
+	w.CFrame = CFrame.lookAt(centre, centre + dirMonde(G, versOuvertureLocal.X, versOuvertureLocal.Z))
+	w.Anchored = true; w.CanCollide = true; w.CanQuery = true; w.CanTouch = false; w.CastShadow = false
+	w.Material = Enum.Material.Concrete; w.Color = COULEUR_DALLE
+	w.Parent = parent
+	return w
+end
+
+-- la queue fixe du trajet de sortie (ExitNodesFixe, cuit par gen_map) + les noeuds de la voie exterieure avant elle
+local function queueSortie(G, spawnFolder, dossierCible, n, xDepart)
+	local plusX = dirMonde(G, 1, 0)
+	local x = xDepart
+	local xFixe = X_QUEUE_SORTIE[G.lettre]
+	while x < xFixe - 25 do
+		noeud(dossierCible, tostring(n), cfVers(monde(G, x, G.Zn), plusX)); n += 1; x += 35
+	end
+	local fixe = spawnFolder:FindFirstChild("ExitNodesFixe")
+	if fixe then
+		local i = 1
+		local src = fixe:FindFirstChild(tostring(i))
+		while src do
+			local c = src:Clone(); c.Name = tostring(n); c.Parent = dossierCible
+			n += 1; i += 1; src = fixe:FindFirstChild(tostring(i))
+		end
+	end
+	return n
+end
+
+local function compat(spawnFolder, nom, source)
+	local old = spawnFolder:FindFirstChild(nom); if old then old:Destroy() end
+	if source then local c = source:Clone(); c.Name = nom; c.Parent = spawnFolder end
+end
+
+-- (re)construit ouvertures (trottoirs masques, bandes, rampes) et noeuds d'apres la grille des sols
+function Acces.Appliquer(player, spawnFolder)
+	local entrees, sorties, G, E, S = Acces.Blocs(player, spawnFolder)
+	if not G then return false end
+	local yT = G.yPlot + HAUTEUR_TROTTOIR
+	local segs = indexerSegments()[spawnFolder.Name]
+	if segs then
+		for _, cote in ipairs({"B", "R"}) do for _, l in pairs(segs[cote]) do for _, p in ipairs(l) do cacher(p, false) end end end
+	end
+	for _, n in ipairs({"Entree", "EntreeTrottoir", "QueueNodes", "AchatNodes", "ExitNodes", "AccesEntree", "AccesSortie", "Entrees", "Sorties", "Passage", "Ouvertures"}) do
+		local old = spawnFolder:FindFirstChild(n); if old then old:Destroy() end
+	end
+	local ouvertures = dossier(spawnFolder, "Ouvertures")
+	local rot = G.pc.CFrame - G.pc.CFrame.Position
+
+	-- --- bord BRANCHE : une bande par rangee ouverte, segments masques, rampes aux bouts de chaque serie ---
+	local versRoute = dirMonde(G, 0, -1)
+	local nz = select(2, PlayerData.GetPlotSize(player)) or 11
+	for z = ENTREE_MIN, nz do
+		if E[z] then
+			local seg = segmentsDe(spawnFolder, "B", z - 1)
+			for _, p in ipairs(seg) do cacher(p, true) end
+			local ouvert = #seg > 0
+			local zc = CASE * z - CASE                    -- centre de la rangee z (Z = (z - 0,5) * 15 - 7,5)
+			local largeur = TROTTOIR + (ouvert and 2.6 or 0.2)
+			local xc = G.Xtrot + G.cote * (ouvert and 1.3 or 0)
+			bitume(ouvertures, "BrancheB" .. z, CFrame.new(monde(G, xc, zc, (ouvert and G.yPlot or yT) + 0.01 - 0.15)) * rot, Vector3.new(largeur, 0.3, CASE))
+			if ouvert then
+				if not E[z - 1] then rampe(ouvertures, "RampeB" .. z .. "M", G, Vector3.new(G.Xtrot, 0, zc - (DEMI - RAMPE / 2)), Vector3.new(0, 0, 1)) end
+				if not E[z + 1] then rampe(ouvertures, "RampeB" .. z .. "P", G, Vector3.new(G.Xtrot, 0, zc + (DEMI - RAMPE / 2)), Vector3.new(0, 0, -1)) end
+			end
+		end
+	end
+	-- --- bord ROUTE DU TOUR : une bande par colonne ouverte ---
+	for x = 1, NX do
+		if S[x] then
+			local k = G.A and (x - 1) or (NX - x)
+			local seg = segmentsDe(spawnFolder, "R", k)
+			for _, p in ipairs(seg) do cacher(p, true) end
+			local ouvert = #seg > 0
+			local xc = CASE * x - DEMI
+			local largeur = TROTTOIR + (ouvert and 2.6 or 0.2)
+			local zc = G.Ztrot - (ouvert and 1.3 or 0)
+			bitume(ouvertures, "RouteS" .. x, CFrame.new(monde(G, xc, zc, (ouvert and G.yPlot or yT) + 0.01 - 0.15)) * rot, Vector3.new(CASE, 0.3, largeur))
+			if ouvert then
+				if not S[x - 1] then rampe(ouvertures, "RampeS" .. x .. "M", G, Vector3.new(xc - (DEMI - RAMPE / 2), 0, G.Ztrot), Vector3.new(1, 0, 0)) end
+				if not S[x + 1] then rampe(ouvertures, "RampeS" .. x .. "P", G, Vector3.new(xc + (DEMI - RAMPE / 2), 0, G.Ztrot), Vector3.new(-1, 0, 0)) end
+			end
+		end
+	end
+
+	-- --- ENTREES : un noeud par bloc ouvert (+ trottoir, + place d'achat) ---
+	local versPlot = dirMonde(G, -G.cote, 0)
+	local versTunnel = dirMonde(G, 0, 1)
+	local dEntrees = dossier(spawnFolder, "Entrees")
+	local principale = nil
+	for _, bz in ipairs(entrees) do
+		local zE = CASE * bz - DEMI
+		local segOK = #segmentsDe(spawnFolder, "B", bz - 1) > 0
+		local n = noeud(dEntrees, tostring(bz), cfVers(monde(G, CASE * G.bxE, zE), versPlot), { BlocX = G.bxE, BlocZ = bz, Index = bz })
+		noeud(n, "Trottoir", cfVers(monde(G, G.Xtrot, zE, segOK and G.yPlot or yT), versPlot))
+		noeud(n, "Achat", cfVers(monde(G, G.Xa, zE - 22), versTunnel))
+		principale = n          -- la derniere = la plus proche du tunnel
+	end
+	-- file des clients : depuis l'entree principale (ou une position par defaut) jusqu'au tunnel
+	local zRef = principale and (CASE * principale:GetAttribute("BlocZ") - DEMI) or (CASE * ENTREE_DEFAUT - DEMI)
+	local file = dossier(spawnFolder, "QueueNodes")
+	local k, z = 1, zRef
+	while z <= Z_FILE_MAX do
+		noeud(file, tostring(k), cfVers(monde(G, G.Xq, z), versRoute))
+		k += 1; z += ESPACE_FILE
+	end
+	local achat = dossier(spawnFolder, "AchatNodes")
+	noeud(achat, "1", cfVers(monde(G, G.Xa, G.A and G.Zn or G.Zf), versTunnel))      -- carrefour : on tourne dans la branche
+	noeud(achat, "2", cfVers(monde(G, G.Xa, zRef - 22), versTunnel))                  -- (compat) devant l'entree principale
+	compat(spawnFolder, "Entree", principale)
+	compat(spawnFolder, "EntreeTrottoir", principale and principale:FindFirstChild("Trottoir"))
+
+	-- --- SORTIES : un dossier de noeuds par bloc ouvert ---
+	local dSorties = dossier(spawnFolder, "Sorties")
+	local plusX = dirMonde(G, 1, 0)
+	local premiere = nil
+	for _, bx in ipairs(sorties) do
+		local xS = CASE * bx
+		local segOK = #segmentsDe(spawnFolder, "R", G.A and (bx - 1) or (NX - bx - 1)) > 0
+		local d = Instance.new("Folder"); d.Name = tostring(bx); d:SetAttribute("BlocX", bx); d:SetAttribute("BlocZ", 1); d.Parent = dSorties
+		noeud(d, "1", cfVers(monde(G, xS, DEMI), versRoute), { BlocX = bx, BlocZ = 1, Index = bx })
+		noeud(d, "2", cfVers(monde(G, xS, G.Ztrot, segOK and G.yPlot or yT), versRoute))
+		noeud(d, "3", cfVers(monde(G, xS, G.Zn), plusX))
+		queueSortie(G, spawnFolder, d, 4, xS + 35)
+		premiere = premiere or d
+	end
+	compat(spawnFolder, "ExitNodes", premiere)
+
+	-- --- PASSAGE (voitures qui ne s'arretent pas) : voie exterieure depuis le carrefour, puis la queue fixe ---
+	local passage = dossier(spawnFolder, "Passage")
+	local xDepart = G.A and 2 * CASE or (NX - 2) * CASE
+	noeud(passage, "1", cfVers(monde(G, xDepart, G.Zn), plusX))
+	queueSortie(G, spawnFolder, passage, 2, xDepart + 35)
+	return true
+end
+
+-- a appeler apres un changement de sol : refait les ouvertures si la case touche un bord d'acces (ou si on ne sait pas)
+function Acces.Rafraichir(player, spawnFolder, x, z)
+	if not spawnFolder then return false end
+	if x and z then
+		local G = Acces.Geometrie(spawnFolder)
+		if G and x ~= G.xE and z ~= 1 then return false end
+	end
+	local ok, err = pcall(Acces.Appliquer, player, spawnFolder)
+	if not ok then warn("[Acces] " .. tostring(err)) end
+	return ok
+end
+
+-- (compat) plus aucune case de tablier
+function Acces.Cases() return {} end
+
+-- resume lisible (commande admin /acces)
+function Acces.Resume(player, spawnFolder)
+	local entrees, sorties, G = Acces.Blocs(player, spawnFolder)
+	if not G then return "plot inconnu" end
+	return ("type %s | entrees (rangees) : %s | sorties (colonnes) : %s"):format(G.lettre,
+		#entrees > 0 and table.concat(entrees, ", ") or "aucune", #sorties > 0 and table.concat(sorties, ", ") or "aucune")
+end
+
+-- (compat v51) : l'ancienne RemoteFunction de deplacement repond qu'il n'y a plus rien a deplacer
+do
+	local f = ReplicatedStorage:FindFirstChild("AccesFunction")
+	if not f then f = Instance.new("RemoteFunction"); f.Name = "AccesFunction"; f.Parent = ReplicatedStorage end
+	f.OnServerInvoke = function() return false, "L'entree et la sortie suivent le goudron : pose du goudron sur une case de bord" end
+end
+
+return Acces

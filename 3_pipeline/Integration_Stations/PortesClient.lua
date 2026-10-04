@@ -1,0 +1,62 @@
+--[[ PortesClient (LocalScript, StarterPlayerScripts) — animation des doubles portes coulissantes (PortesUsine).
+	Tout se joue chez chaque joueur : quand SON personnage est a moins de "Portee" studs d'une porte (tag
+	"PorteCoulissante"), les deux vantaux glissent vers le fond (attribut "Course", puis 2 x Course pour le second) et
+	leurs collisions s'effacent localement ; ils se referment quand il s'eloigne. Rien n'est envoye au serveur.
+]]
+local CollectionService = game:GetService("CollectionService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+
+local joueur = Players.LocalPlayer
+local portes = {}      -- [model] = {A = part, B = part, fermeA = CFrame, fermeB = CFrame, ouvert = bool, tweens = {}}
+
+local function preparer(m)
+	if portes[m] then return end
+	task.spawn(function()
+		-- les vantaux peuvent arriver apres le modele (replication) : on les attend
+		local A, B = m:WaitForChild("VantailA", 10), m:WaitForChild("VantailB", 10)
+		if not (A and B) or portes[m] then return end
+		portes[m] = {A = A, B = B, fermeA = A.CFrame, fermeB = B.CFrame, ouvert = false, tweens = {}}
+	end)
+end
+
+local function bouger(P, ouvrir, course)
+	for _, t in ipairs(P.tweens) do t:Cancel() end
+	P.tweens = {}
+	local info = TweenInfo.new(0.7, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	local cibleA = ouvrir and (P.fermeA * CFrame.new(course, 0, 0)) or P.fermeA
+	local cibleB = ouvrir and (P.fermeB * CFrame.new(course, 0, 0)) or P.fermeB
+	local tA = TweenService:Create(P.A, info, {CFrame = cibleA})
+	local tB = TweenService:Create(P.B, info, {CFrame = cibleB})
+	tA:Play(); tB:Play()
+	P.tweens = {tA, tB}
+	P.A.CanCollide = not ouvrir
+	P.B.CanCollide = not ouvrir
+end
+
+for _, m in ipairs(CollectionService:GetTagged("PorteCoulissante")) do preparer(m) end
+CollectionService:GetInstanceAddedSignal("PorteCoulissante"):Connect(preparer)
+CollectionService:GetInstanceRemovedSignal("PorteCoulissante"):Connect(function(m) portes[m] = nil end)
+
+local horloge = 0
+RunService.Heartbeat:Connect(function(dt)
+	horloge += dt
+	if horloge < 0.15 then return end
+	horloge = 0
+	local perso = joueur.Character
+	local racine = perso and perso:FindFirstChild("HumanoidRootPart")
+	if not racine then return end
+	for m, P in pairs(portes) do
+		if not m.Parent then portes[m] = nil continue end
+		local portee = m:GetAttribute("Portee") or 26
+		local course = m:GetAttribute("Course") or 16
+		local centre = (P.fermeA.Position + P.fermeB.Position) / 2
+		local d = (racine.Position - centre)
+		local proche = Vector3.new(d.X, 0, d.Z).Magnitude < portee and math.abs(d.Y) < 30
+		if proche ~= P.ouvert then
+			P.ouvert = proche
+			bouger(P, proche, course)
+		end
+	end
+end)

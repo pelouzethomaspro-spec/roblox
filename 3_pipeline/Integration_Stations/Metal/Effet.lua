@@ -1,0 +1,415 @@
+--[[ Metal / Effet   (ReplicatedStorage > Metal > Effet) - calcule chez chaque joueur, rien sur le serveur
+	Quand une voiture recoit l'attribut "Metal" ("Or" / "Argent") :
+	  1. des paillettes s'enroulent autour de la voiture et se posent sur la carrosserie ;
+	  2. un anneau de lumiere (et un voile) balaie la voiture de l'avant a l'arriere : chaque piece qu'il depasse
+	     devient en metal, avec des paillettes qui jaillissent de l'anneau ;
+	  3. eclat final : flash, gerbe de paillettes, onde lumineuse au sol, tintement ;
+	  4. ensuite, des etoiles scintillent de temps en temps sur le metal.
+	Sans l'attribut, la voiture reprend exactement ses couleurs, matieres, textures (SurfaceAppearance) d'origine.
+	Optimisation : aucune creation d'objet par image, une seule boucle ; pas d'animation au-dela de
+	DISTANCE_ANIMATION (la voiture change directement) ; etoiles seulement sur les MAX_ETOILES voitures les plus proches.
+]]
+local RunService = game:GetService("RunService")
+local CollectionService = game:GetService("CollectionService")
+local TweenService = game:GetService("TweenService")
+local Debris = game:GetService("Debris")
+
+local R = require(script.Parent.Reglages)
+local TAG = "Metal"
+local Effet = {}
+local rng = Random.new()
+local function rnd(a, b) return rng:NextNumber(a, b) end
+local function lisse(x) x = math.clamp(x, 0, 1); return x * x * (3 - 2 * x) end
+
+local INTEGRE = {Etoile = "rbxasset://textures/particles/sparkles_main.dds", Paillette = "rbxasset://textures/particles/sparkles_main.dds", Trait = ""}
+local function valide(id) return type(id) == "string" and id:match("%d") ~= nil and not id:match("://0*$") end
+local function tex(nom) local id = R.TEXTURES[nom]; return valide(id) and id or INTEGRE[nom] end
+local function son(nom) local id = R.SONS[nom]; return valide(id) and id or nil end
+local function qualite()
+	local ok, q = pcall(function() return UserSettings():GetService("UserGameSettings").SavedQualityLevel.Value end)
+	if not ok or not q or q == 0 then return 0.8 end
+	return math.clamp(q / 10, 0.3, 1)
+end
+local Q = qualite()
+local function num(...) return NumberSequence.new(...) end
+local function kp(t, v) return NumberSequenceKeypoint.new(t, v) end
+local ancre = workspace.Terrain
+
+local function emetteur(parent, texture, couleur)
+	local e = Instance.new("ParticleEmitter")
+	e.Texture = texture; e.Color = ColorSequence.new(couleur); e.LightEmission = 1; e.LightInfluence = 0
+	e.Rate = 0; e.Enabled = true; e.Brightness = 3
+	e.Parent = parent
+	return e
+end
+local function paillettes(parent, couleur)
+	local e = emetteur(parent, tex("Paillette"), couleur)
+	e.Size = num({kp(0, 0.45), kp(1, 0)}); e.Lifetime = NumberRange.new(0.5, 1.1)
+	e.Speed = NumberRange.new(2, 6); e.SpreadAngle = Vector2.new(70, 70); e.Acceleration = Vector3.new(0, -3, 0); e.Drag = 1.5
+	e.Transparency = num({kp(0, 0), kp(0.7, 0.1), kp(1, 1)})
+	return e
+end
+local function etoiles(parent, couleur)
+	local e = emetteur(parent, tex("Etoile"), couleur)
+	e.Size = num({kp(0, 0), kp(0.5, 1.4), kp(1, 0)}); e.Lifetime = NumberRange.new(0.45, 0.7)
+	e.Speed = NumberRange.new(0, 0); e.Rotation = NumberRange.new(0, 90); e.RotSpeed = NumberRange.new(-90, 90)
+	e.Transparency = num(0)
+	return e
+end
+local function beam(a0, a1, couleur, largeur)
+	local b = Instance.new("Beam")
+	b.Attachment0, b.Attachment1 = a0, a1
+	b.Texture = tex("Trait"); b.TextureMode = Enum.TextureMode.Stretch
+	b.Color = ColorSequence.new(couleur); b.LightEmission = 1; b.LightInfluence = 0; b.Brightness = 4
+	b.Width0, b.Width1 = largeur, largeur; b.FaceCamera = true; b.Segments = 1
+	b.Parent = ancre
+	return b
+end
+local function att(pos)
+	local a = Instance.new("Attachment"); a.Name = "Metal"; a.Parent = ancre; a.WorldPosition = pos; return a
+end
+local function jouerSon(id, parent, vol)
+	if not id then return end
+	local s = Instance.new("Sound"); s.SoundId = id; s.Volume = vol * R.VOLUME
+	s.RollOffMode = Enum.RollOffMode.InverseTapered; s.RollOffMinDistance = 20; s.RollOffMaxDistance = 250
+	s.Parent = parent; s:Play(); Debris:AddItem(s, 8)
+end
+
+------------------------------------------------------------------ matiere : sauvegarde / metal / retour
+local function piecesVisibles(m)
+	local l = {}
+	for _, p in ipairs(m:GetDescendants()) do
+		if p:IsA("BasePart") and p.Transparency < 0.98 then table.insert(l, p) end
+	end
+	return l
+end
+local function metallique(V, p)
+	if V.sauve[p] then return end
+	local s = {Material = p.Material, Color = p.Color, Reflectance = p.Reflectance, sa = {}}
+	if p:IsA("MeshPart") then s.TextureID = p.TextureID; pcall(function() p.TextureID = "" end) end
+	for _, c in ipairs(p:GetChildren()) do
+		if c:IsA("SurfaceAppearance") then table.insert(s.sa, c); c.Parent = nil end
+	end
+	V.sauve[p] = s
+	local v = R.VARIANTES[V.variante]
+	p.Material = v.materiau; p.Color = v.couleur; p.Reflectance = v.reflet
+end
+local function restaurer(V)
+	for p, s in pairs(V.sauve) do
+		if p.Parent then
+			p.Material = s.Material; p.Color = s.Color; p.Reflectance = s.Reflectance
+			if s.TextureID then pcall(function() p.TextureID = s.TextureID end) end
+			for _, c in ipairs(s.sa) do c.Parent = p end
+		else
+			for _, c in ipairs(s.sa) do c:Destroy() end
+		end
+	end
+	V.sauve = {}
+end
+
+------------------------------------------------------------------ geometrie de la voiture
+local function racineDe(m)
+	if m.PrimaryPart then return m.PrimaryPart end
+	local best, bv = m:FindFirstChildWhichIsA("VehicleSeat", true), -1
+	if best then return best end
+	for _, p in ipairs(m:GetDescendants()) do
+		if p:IsA("BasePart") then local s = p.Size; local v = s.X * s.Y * s.Z; if v > bv then best, bv = p, v end end
+	end
+	return best
+end
+local function reperes(m)
+	local cf, taille = m:GetBoundingBox()
+	local axe, demi, largeur
+	if taille.Z >= taille.X then axe, demi, largeur = cf.LookVector, taille.Z / 2, taille.X
+	else axe, demi, largeur = cf.RightVector, taille.X / 2, taille.Z end
+	local cote = axe:Cross(Vector3.new(0, 1, 0))
+	if cote.Magnitude < 0.1 then cote = cf.RightVector end
+	cote = cote.Unit
+	local bas = cf.Position.Y - taille.Y / 2
+	return {cf = cf, taille = taille, axe = axe, demi = demi, largeur = largeur, cote = cote, bas = bas, haut = taille.Y}
+end
+local function surfaceMonde(m, g, n)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Include
+	params.FilterDescendantsInstances = {m}
+	local pts = {}
+	for _ = 1, n * 3 do
+		local dir = Vector3.new(rnd(-1, 1), rnd(-0.2, 1), rnd(-1, 1))
+		if dir.Magnitude < 0.2 then continue end
+		local cible = g.cf:PointToWorldSpace(Vector3.new(rnd(-0.35, 0.35) * g.taille.X, rnd(-0.15, 0.3) * g.taille.Y, rnd(-0.4, 0.4) * g.taille.Z))
+		local origine = cible + dir.Unit * g.taille.Magnitude
+		local r = workspace:Raycast(origine, cible - origine, params)
+		if r then table.insert(pts, r.Position + r.Normal * 0.1) end
+		if #pts >= n then break end
+	end
+	while #pts < n do table.insert(pts, g.cf:PointToWorldSpace(Vector3.new(rnd(-0.4, 0.4) * g.taille.X, rnd(0, 0.4) * g.taille.Y, rnd(-0.4, 0.4) * g.taille.Z))) end
+	return pts
+end
+
+------------------------------------------------------------------ etat par voiture
+local voitures = {}     -- modele -> V
+local animations = {}   -- V en cours d'animation
+
+local function arreterAnimation(V)
+	local A = V.anim
+	if not A then return end
+	for _, o in ipairs(A.objets) do o:Destroy() end
+	V.anim = nil
+	animations[V] = nil
+end
+
+local function poserEtoiles(V)
+	if V.etoiles or not V.racine or not V.racine.Parent then return end
+	V.etoiles = {}
+	local v = R.VARIANTES[V.variante]
+	for _, p in ipairs(surfaceMonde(V.modele, reperes(V.modele), 5)) do
+		local a = Instance.new("Attachment"); a.Name = "MetalEtoile"; a.Parent = V.racine
+		a.WorldPosition = p
+		local e = etoiles(a, v.etoile); e.Rate = 0; e.Enabled = false
+		table.insert(V.etoiles, {a = a, e = e})
+	end
+end
+local function retirerEtoiles(V)
+	for _, x in ipairs(V.etoiles or {}) do x.a:Destroy() end
+	V.etoiles = nil; V.etoilesOn = false
+end
+
+local function finAnimation(V)
+	local A = V.anim
+	for _, p in ipairs(A.pieces) do metallique(V, p.p) end
+	-- eclat : flash, gerbe, onde au sol, tintement
+	local v = R.VARIANTES[V.variante]
+	local c = A.centre
+	A.eclatT = os.clock()
+	A.lum.Brightness = 8; A.lum.Range = 30
+	TweenService:Create(A.lum, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Brightness = 0}):Play()
+	A.gerbe:Emit(math.floor(70 * Q))
+	A.eclats:Emit(math.floor(10 * Q))
+	jouerSon(son("Eclat"), c, 1)
+	A.phase = "onde"
+	poserEtoiles(V)
+end
+
+local function demarrerAnimation(V)
+	arreterAnimation(V)
+	local m = V.modele
+	local g = reperes(m)
+	local v = R.VARIANTES[V.variante]
+	local A = {t0 = os.clock(), g = g, objets = {}, phase = "spirale"}
+	local function garde(o) table.insert(A.objets, o); return o end
+	-- pieces triees de l'avant vers l'arriere
+	A.pieces = {}
+	for _, p in ipairs(piecesVisibles(m)) do
+		table.insert(A.pieces, {p = p, k = g.axe:Dot(p.Position - g.cf.Position)})
+	end
+	table.sort(A.pieces, function(a, b) return a.k > b.k end)
+	A.prochaine = 1
+	-- centre (lumiere, gerbe finale, son)
+	A.centre = garde(att(g.cf.Position))
+	A.lum = Instance.new("PointLight"); A.lum.Color = v.lueur; A.lum.Brightness = 0; A.lum.Range = 20; A.lum.Shadows = false; A.lum.Parent = A.centre
+	A.gerbe = paillettes(A.centre, v.lueur); A.gerbe.Speed = NumberRange.new(8, 16); A.gerbe.SpreadAngle = Vector2.new(180, 180)
+	A.gerbe.Acceleration = Vector3.new(0, -6, 0); A.gerbe.Lifetime = NumberRange.new(0.6, 1.4)
+	A.eclats = etoiles(A.centre, v.etoile); A.eclats.Speed = NumberRange.new(4, 9); A.eclats.SpreadAngle = Vector2.new(180, 180)
+	A.eclats.Size = num({kp(0, 0), kp(0.4, 2.4), kp(1, 0)})
+	-- paillettes en spirale (particules collees a leur point : elles suivent le point)
+	A.spirale = {}
+	local cibles = surfaceMonde(m, g, 18)
+	for i = 1, math.floor(18 * math.max(Q, 0.5)) do
+		local a = garde(att(g.cf.Position))
+		local e = paillettes(a, v.lueur); e.LockedToPart = true; e.Speed = NumberRange.new(0, 0)
+		e.Lifetime = NumberRange.new(R.SPIRALE + 0.5, R.SPIRALE + 0.5); e.Size = num({kp(0, 0.35), kp(0.8, 0.45), kp(1, 0)})
+		e.Acceleration = Vector3.new(); e.Transparency = num({kp(0, 1), kp(0.15, 0), kp(0.85, 0), kp(1, 1)})
+		table.insert(A.spirale, {a = a, e = e, r = rnd(6, 10) * g.taille.Magnitude / 18, ang = rnd(0, 6.28), w = rnd(1.2, 2.5) * (rng:NextNumber() < 0.5 and -1 or 1),
+			z = rnd(0, 1.5), vz = rnd(0.6, 1.6), cible = cibles[i] or g.cf.Position, lance = false})
+	end
+	-- anneau (3 traits) + voile qui porte les paillettes de l'anneau
+	A.coins = {garde(att(g.cf.Position)), garde(att(g.cf.Position)), garde(att(g.cf.Position)), garde(att(g.cf.Position))}
+	A.traits = {}
+	for i = 1, 3 do
+		local b = garde(beam(A.coins[i], A.coins[i + 1], v.lueur, 0.45)); b.Enabled = false; A.traits[i] = b
+	end
+	local voile = Instance.new("Part"); voile.Name = "MetalVoile"; voile.Anchored = true; voile.CanCollide = false; voile.CanQuery = false
+	voile.CanTouch = false; voile.CastShadow = false; voile.Material = Enum.Material.Neon; voile.Color = v.lueur; voile.Transparency = 1
+	voile.Size = Vector3.new(g.largeur + 1, g.haut + 0.6, 0.1); voile.Parent = workspace
+	A.voile = garde(voile)
+	A.pailAnneau = paillettes(voile, v.lueur); A.pailAnneau.Shape = Enum.ParticleEmitterShape.Box
+	A.pailAnneau.ShapeStyle = Enum.ParticleEmitterShapeStyle.Surface
+	-- onde au sol : 20 traits en cercle
+	A.onde = {}
+	local n = 20
+	local pts = {}
+	for i = 1, n do pts[i] = garde(att(g.cf.Position)) end
+	for i = 1, n do local b = garde(beam(pts[i], pts[i % n + 1], v.lueur, 0.6)); b.Enabled = false; A.onde[i] = b end
+	A.pointsOnde = pts
+	V.anim = A
+	animations[V] = true
+	jouerSon(son("Transformation"), A.centre, 0.9)
+end
+
+local function majAnimation(V, maintenant)
+	local A = V.anim
+	local g = A.g
+	local t = maintenant - A.t0
+	local v = R.VARIANTES[V.variante]
+	-- 1. spirale
+	if t < R.SPIRALE + 0.6 then
+		for _, s in ipairs(A.spirale) do
+			if not s.lance then s.e:Emit(1); s.lance = true end
+			local u = t / (R.SPIRALE + 0.4)
+			local r = s.r * (1 - 0.8 * lisse(u))
+			local ang = s.ang + s.w * t * 2
+			local p = g.cf.Position + g.cote * math.cos(ang) * r + g.axe * math.sin(ang) * r * 1.5
+			p = Vector3.new(p.X, g.bas + s.z + s.vz * t * 2, p.Z)
+			s.a.WorldPosition = p:Lerp(s.cible, lisse((u - 0.55) / 0.45))
+		end
+	end
+	-- 2. balayage
+	local tb = t - R.SPIRALE
+	if A.phase == "spirale" and tb >= 0 then
+		A.phase = "balayage"
+		for _, b in ipairs(A.traits) do b.Enabled = true end
+		A.pailAnneau.Rate = 35 * Q
+	end
+	if A.phase == "balayage" then
+		local u = tb / R.BALAYAGE
+		local k = g.demi + 0.5 - (2 * g.demi + 1) * lisse(u)          -- position de l'anneau le long de la voiture
+		local centre = g.cf.Position + g.axe * k
+		local base = Vector3.new(centre.X, g.bas + 0.05, centre.Z)
+		local l = g.largeur / 2 + 0.45
+		local h = g.haut + 0.3
+		A.coins[1].WorldPosition = base - g.cote * l
+		A.coins[2].WorldPosition = base - g.cote * l + Vector3.new(0, h, 0)
+		A.coins[3].WorldPosition = base + g.cote * l + Vector3.new(0, h, 0)
+		A.coins[4].WorldPosition = base + g.cote * l
+		A.voile.CFrame = CFrame.lookAt(base + Vector3.new(0, h / 2, 0), base + Vector3.new(0, h / 2, 0) + g.axe)
+		local fondu = math.min(1, tb / 0.15) * math.min(1, math.max(0, (1 - u) / 0.07))
+		A.voile.Transparency = 1 - 0.18 * fondu
+		for _, b in ipairs(A.traits) do b.Transparency = NumberSequence.new(1 - fondu) end
+		A.lum.Brightness = 3 * fondu; A.centre.WorldPosition = base + Vector3.new(0, h * 0.6, 0) - g.axe * 0.8
+		while A.prochaine <= #A.pieces and A.pieces[A.prochaine].k >= k do
+			metallique(V, A.pieces[A.prochaine].p)
+			A.prochaine += 1
+		end
+		if u >= 1 then
+			for _, b in ipairs(A.traits) do b.Enabled = false end
+			A.pailAnneau.Rate = 0; A.voile.Transparency = 1
+			A.centre.WorldPosition = g.cf.Position + Vector3.new(0, g.haut * 0.3, 0)
+			finAnimation(V)
+		end
+	end
+	-- 3. onde au sol
+	if A.phase == "onde" then
+		local d = maintenant - A.eclatT
+		local u = d / 0.8
+		if u < 1 then
+			local r = 3 + 16 * u ^ 0.7
+			local n = #A.pointsOnde
+			for i, a in ipairs(A.pointsOnde) do
+				local ang = (i - 1) / n * math.pi * 2
+				a.WorldPosition = Vector3.new(g.cf.Position.X, g.bas + 0.08, g.cf.Position.Z) + g.cote * math.cos(ang) * r + g.axe * math.sin(ang) * r * 1.4
+			end
+			local tr = NumberSequence.new(math.clamp(u ^ 1.5, 0, 1))
+			for _, b in ipairs(A.onde) do b.Enabled = true; b.Transparency = tr end
+		else
+			arreterAnimation(V)
+		end
+	end
+end
+
+------------------------------------------------------------------ transformations
+local function appliquer(m)
+	local variante = m:GetAttribute("Metal")
+	local V = voitures[m]
+	if not variante or not R.VARIANTES[variante] then
+		if V then
+			arreterAnimation(V); restaurer(V); retirerEtoiles(V)
+			for _, c in ipairs(V.connexions) do c:Disconnect() end
+			voitures[m] = nil
+		end
+		return
+	end
+	if V and V.variante ~= variante then arreterAnimation(V); restaurer(V); retirerEtoiles(V) end
+	if not V then
+		V = {modele = m, sauve = {}, connexions = {}}
+		voitures[m] = V
+		table.insert(V.connexions, m.AncestryChanged:Connect(function(_, parent)
+			if not parent then arreterAnimation(V); retirerEtoiles(V); voitures[m] = nil end
+		end))
+	elseif V.variante == variante and next(V.sauve) then
+		return                                                    -- deja dans cette matiere
+	end
+	V.variante = variante
+	V.racine = racineDe(m)
+	local t = m:GetAttribute("MetalT")
+	local recent = t and (workspace:GetServerTimeNow() - t) < 3
+	local cam = workspace.CurrentCamera
+	local proche = cam and V.racine and (V.racine.Position - cam.CFrame.Position).Magnitude < R.DISTANCE_ANIMATION
+	if recent and proche then
+		demarrerAnimation(V)
+	else
+		for _, p in ipairs(piecesVisibles(m)) do metallique(V, p) end
+		poserEtoiles(V)
+	end
+end
+
+------------------------------------------------------------------ boucle unique
+local tLod = 0
+RunService.Heartbeat:Connect(function(dt)
+	local maintenant = os.clock()
+	for V in pairs(animations) do
+		if V.modele.Parent and V.anim then majAnimation(V, maintenant) else arreterAnimation(V) end
+	end
+	tLod -= dt
+	if tLod <= 0 then
+		tLod = 0.5
+		local cam = workspace.CurrentCamera
+		if not cam then return end
+		local liste = {}
+		for _, V in pairs(voitures) do
+			if V.etoiles and V.racine and V.racine.Parent then
+				V.dist = (V.racine.Position - cam.CFrame.Position).Magnitude; table.insert(liste, V)
+			end
+		end
+		table.sort(liste, function(a, b) return a.dist < b.dist end)
+		for i, V in ipairs(liste) do
+			local on = i <= R.MAX_ETOILES and V.dist < R.DISTANCE_ETOILES
+			if on ~= V.etoilesOn then
+				V.etoilesOn = on
+				for _, x in ipairs(V.etoiles) do x.e.Rate = on and 0.5 * Q or 0; x.e.Enabled = on end
+			end
+		end
+	end
+end)
+
+function Effet.lancer()
+	CollectionService:GetInstanceAddedSignal(TAG):Connect(function(m)
+		if not m:IsA("Model") then return end
+		appliquer(m)
+		local c1 = m:GetAttributeChangedSignal("Metal"):Connect(function() appliquer(m) end)
+		local c2 = m:GetAttributeChangedSignal("MetalT"):Connect(function() if m:GetAttribute("Metal") then appliquer(m) end end)
+		local V = voitures[m]
+		if V then table.insert(V.connexions, c1); table.insert(V.connexions, c2) else c1:Disconnect(); c2:Disconnect() end
+	end)
+	CollectionService:GetInstanceRemovedSignal(TAG):Connect(function(m)
+		local V = voitures[m]
+		if V then
+			arreterAnimation(V); restaurer(V); retirerEtoiles(V)
+			for _, c in ipairs(V.connexions) do c:Disconnect() end
+			voitures[m] = nil
+		end
+	end)
+	for _, m in ipairs(CollectionService:GetTagged(TAG)) do
+		task.spawn(function()
+			appliquer(m)
+			local V = voitures[m]
+			if V then
+				table.insert(V.connexions, m:GetAttributeChangedSignal("Metal"):Connect(function() appliquer(m) end))
+				table.insert(V.connexions, m:GetAttributeChangedSignal("MetalT"):Connect(function() if m:GetAttribute("Metal") then appliquer(m) end end))
+			end
+		end)
+	end
+end
+
+Effet._voitures = voitures
+Effet._animations = animations
+return Effet

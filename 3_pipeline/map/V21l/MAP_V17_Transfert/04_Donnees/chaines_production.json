@@ -1,0 +1,42 @@
+{
+ "repere": "Roblox studs, centre de la map = (0,0,0)",
+ "chaines_production": {
+  "NE": {
+   "hall": [
+    235.91248989105225,
+    31.644997000694275,
+    -235.91253757476807
+   ],
+   "angle_y_deg": -45.0,
+   "echelle": 1.0
+  },
+  "NO": {
+   "hall": [
+    -235.91248989105225,
+    31.644997000694275,
+    -235.91253757476807
+   ],
+   "angle_y_deg": 45.0,
+   "echelle": 1.0
+  },
+  "SO": {
+   "hall": [
+    -235.91251373291016,
+    31.644997000694275,
+    235.91251373291016
+   ],
+   "angle_y_deg": -225.0,
+   "echelle": 1.0
+  },
+  "SE": {
+   "hall": [
+    235.91251373291016,
+    31.644997000694275,
+    235.91251373291016
+   ],
+   "angle_y_deg": -135.0,
+   "echelle": 1.0
+  }
+ },
+ "sas_V18": "portes coulissantes : voir DonneesArbres.portes_sas (2 sas par chaine, 2 portes par sas)"
+}

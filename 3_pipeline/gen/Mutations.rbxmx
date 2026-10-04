@@ -1,0 +1,127 @@
+<roblox version="4">
+<Item class="Script"><Properties><string name="Name">Mutations</string><ProtectedString name="Source">--[[ Mutations (Script, ServerScriptService) — TRES RAREMENT, une voiture en circulation "mute" :
+	  * ELECTRIQUE : la foudre la frappe (pack Foudre : eclair, arcs violets, halo, crepitement), pendant DUREE_FOUDRE s ;
+	  * OR         : elle se transforme en or (pack Metal : paillettes, anneau qui balaie la voiture, eclat, etoiles) ;
+	  * ARGENT     : idem en argent.
+	L'or et l'argent restent jusqu'a ce que la voiture quitte le jeu. Une voiture mutee paie plus a la caisse
+	(CarManager : or x3, argent x2, electrique x1,5) : l'attribut "Mutation" est pose sur la voiture.
+
+	Le serveur ne fait que designer la voiture (tags/attributs) : tout le visuel est calcule chez chaque joueur
+	(StarterPlayerScripts/FoudreClient et MetalClient). Cout serveur quasi nul.
+
+	Voitures du jeu : les Models dont le PrimaryPart s'appelle "Root", dans Workspace/Cars_&lt;UserId&gt; (clientes des
+	joueurs) et Workspace/Cars_Ambiance. Les camions de livraison (Livraisons_&lt;UserId&gt;) ne mutent pas.
+
+	Commandes admin (AdminCommands) : /mutation foudre|or|argent  (sur la voiture la plus proche de toi)
+	                                  /mutation stop              (tout eteindre / retablir)
+]]
+local ACTIF = true
+local INTERVALLE = {240, 540}     -- secondes entre deux mutations (au hasard entre 4 et 9 minutes)
+local DUREE_FOUDRE = 45           -- secondes pendant lesquelles une voiture reste electrique
+local PROXIMITE_JOUEUR = 500      -- on prefere une voiture a moins de cette distance d'un joueur (pour que quelqu'un le voie)
+local CHANCES = { {"Electrique", 50}, {"Or", 30}, {"Argent", 20} }   -- poids relatifs
+
+local Players = game:GetService("Players")
+local Foudre = require(script.Parent:WaitForChild("FoudreServeur"))
+local Metal = require(script.Parent:WaitForChild("MetalServeur"))
+
+local Mutations = {}
+
+local function estVoiture(m)
+	return m:IsA("Model") and m.PrimaryPart ~= nil and m.PrimaryPart.Name == "Root"
+end
+
+-- toutes les voitures en circulation
+function Mutations.voitures()
+	local liste = {}
+	for _, dossier in ipairs(workspace:GetChildren()) do
+		if dossier:IsA("Folder") and dossier.Name:sub(1, 5) == "Cars_" then
+			for _, d in ipairs(dossier:GetChildren()) do
+				if estVoiture(d) then table.insert(liste, d) end
+			end
+		end
+	end
+	return liste
+end
+
+-- les voitures proches d'un joueur d'abord (et pas deja mutees) ; s'il n'y en a aucune, toutes
+local function candidates()
+	local toutes = {}
+	for _, v in ipairs(Mutations.voitures()) do
+		if not v:GetAttribute("Mutation") then table.insert(toutes, v) end
+	end
+	local racines = {}
+	for _, p in ipairs(Players:GetPlayers()) do
+		local hrp = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+		if hrp then table.insert(racines, hrp.Position) end
+	end
+	local proches = {}
+	for _, v in ipairs(toutes) do
+		local pos = v.PrimaryPart.Position
+		for _, r in ipairs(racines) do
+			if (pos - r).Magnitude &lt; PROXIMITE_JOUEUR then table.insert(proches, v) break end
+		end
+	end
+	return #proches &gt; 0 and proches or toutes
+end
+
+local function tirerType()
+	local total = 0
+	for _, c in ipairs(CHANCES) do total += c[2] end
+	local r = math.random() * total
+	for _, c in ipairs(CHANCES) do
+		r -= c[2]
+		if r &lt;= 0 then return c[1] end
+	end
+	return CHANCES[1][1]
+end
+
+-- applique une mutation a une voiture (Model)
+function Mutations.appliquer(voiture, genre)
+	if not (voiture and voiture.Parent) then return false end
+	if genre == "Electrique" then
+		Foudre.frapper(voiture, DUREE_FOUDRE)
+		voiture:SetAttribute("Mutation", "Electrique")
+		task.delay(DUREE_FOUDRE, function()
+			if voiture.Parent and voiture:GetAttribute("Mutation") == "Electrique" then voiture:SetAttribute("Mutation", nil) end
+		end)
+	elseif genre == "Or" or genre == "Argent" then
+		Metal.transformer(voiture, genre)
+		voiture:SetAttribute("Mutation", genre)
+	else
+		return false
+	end
+	print(("[Mutations] %s -&gt; %s"):format(voiture.Name, genre))
+	return true
+end
+
+function Mutations.retablir(voiture)
+	Foudre.eteindre(voiture)
+	Metal.retablir(voiture)
+	voiture:SetAttribute("Mutation", nil)
+end
+
+function Mutations.toutRetablir()
+	Foudre.eteindreTout()
+	Metal.retablirTout()
+	for _, v in ipairs(Mutations.voitures()) do v:SetAttribute("Mutation", nil) end
+end
+
+-- partage avec AdminCommands (module unique) : Foudre.Mutations
+Foudre.Mutations = Mutations
+Metal.voitures = Mutations.voitures       -- Metal.toutes(...) agit sur nos voitures (pas de VehicleSeat ici)
+
+if ACTIF then
+	task.spawn(function()
+		local rng = Random.new()
+		while true do
+			task.wait(rng:NextNumber(INTERVALLE[1], INTERVALLE[2]))
+			local liste = candidates()
+			if #liste &gt; 0 then Mutations.appliquer(liste[rng:NextInteger(1, #liste)], tirerType()) end
+		end
+	end)
+	print(("[Mutations] une voiture mute au hasard toutes les %d a %d s (electrique %d %%, or %d %%, argent %d %%)"):format(
+		INTERVALLE[1], INTERVALLE[2], CHANCES[1][2], CHANCES[2][2], CHANCES[3][2]))
+end
+</ProtectedString></Properties></Item>
+</roblox>

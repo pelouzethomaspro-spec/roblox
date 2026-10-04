@@ -1,0 +1,8 @@
+<roblox version="4">
+<Item class="LocalScript"><Properties><string name="Name">MetalClient</string><ProtectedString name="Source">--[[ MetalClient   (LocalScript, StarterPlayer &gt; StarterPlayerScripts)
+	Transformation des voitures en or / argent chez ce joueur. Reglages : ReplicatedStorage &gt; Metal &gt; Reglages.
+]]
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+require(ReplicatedStorage:WaitForChild("Metal"):WaitForChild("Effet")).lancer()
+</ProtectedString></Properties></Item>
+</roblox>
