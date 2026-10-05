@@ -122,7 +122,7 @@ simulé : Argent 20 min, Or 1 h 15, Platine 3 h, Diamant 7 h, Maître 19 h, Lég
   (« ...Ouf. Ça va, ça va. Je gère. »), puis il va se garer sur l'herbe (colonnes 3-4, rangée 8) et te fait l'accueil depuis
   la benne. Il y reste pendant la première voiture (« ...Moi je bouge pas de ma benne. C'est plus classe. ») et descend pour
   l'étape du lavage, comme avant. Sans modèle F150 dans la place : ancienne intro (sur le toit de la Clio).
-* Réglages dans `ClientTutoriel` (table `PICKUP`) : angle de dérive 32°, roulis 24°, glissement 5,5 studs, accélération.
+* Réglages dans `ClientTutoriel` (table `PICKUP`) : dérive 32°, roulis 26° pendant une impulsion de 0,45 s au sommet du virage (très bref, retombée sèche), ItsCirly glisse jusqu'à dépasser la ridelle (à moitié dehors). Prévisualisation 3D : `2_documents/apercus/intro_f150.html`.
   Le trajet et le parking sont dans `Tutoriel.lua` (bloc « pickup »).
 
 ### Bruits de moteur par modèle (à partir d'Épique)

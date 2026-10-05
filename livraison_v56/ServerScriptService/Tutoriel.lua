@@ -319,7 +319,7 @@ function Tutoriel.Lancer(player, spawnFolder, plotFolder, options)
 				if entree then table.insert(points, { cf = entree.CFrame, v = 20, derapage = true }) end
 				local dirPlot = entree and entree.CFrame.LookVector or (pc:GetPivot().RightVector * (P.A and 1 or -1))
 				local c1 = cfCase(pc, mx(3), 4.5, 0.6)
-				table.insert(points, { cf = CFrame.lookAt(c1.Position, c1.Position + dirPlot), v = 13, derapage = true })
+				table.insert(points, { cf = CFrame.lookAt(c1.Position, c1.Position + dirPlot), v = 13 })
 				-- parking sur l'herbe : colonnes 3-4, rangee 8 (hors du goudron, de la station et du chemin pieton)
 				local c2 = cfCase(pc, mx(3.5), 6.6, 0.6)
 				local park = cfCase(pc, mx(3.5), 8.6, 0.6)

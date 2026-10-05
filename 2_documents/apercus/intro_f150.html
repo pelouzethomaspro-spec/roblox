@@ -1,0 +1,291 @@
+<title>Intro F-150 Station Tycoon</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;800&display=swap">
+<style>
+/* Mise en page : la scene 3D plein cadre, un bandeau de commandes dessous, sous-titres du tutoriel en bas de la scene */
+:root{
+  --bg:#eef1ee; --fg:#1d2b3a; --muted:#5d6b78; --panel:#ffffff; --line:#d5dbd6;
+  --accent:#178f55; --accent2:#f0b429; --danger:#d4573f;
+  --font-display:"Nunito",system-ui,sans-serif; --font-body:"Nunito",system-ui,sans-serif;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){ --bg:#141a1f; --fg:#eef2f5; --muted:#9aa7b3; --panel:#1d262d; --line:#2f3b45; --accent:#39b37a; --accent2:#f5c74e; --danger:#e0775f; color-scheme:dark } }
+:root[data-theme="dark"]{ --bg:#141a1f; --fg:#eef2f5; --muted:#9aa7b3; --panel:#1d262d; --line:#2f3b45; --accent:#39b37a; --accent2:#f5c74e; --danger:#e0775f; color-scheme:dark }
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font-body);display:flex;flex-direction:column;min-height:100%}
+header{padding:12px 16px 6px;display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 16px}
+header h1{font-family:var(--font-display);font-weight:800;font-size:20px;margin:0;text-wrap:balance}
+header p{margin:0;color:var(--muted);font-size:13px}
+#scene{position:relative;flex:1;min-height:360px;margin:0 16px;border-radius:12px;overflow:hidden;background:#88a0c4}
+#scene canvas{display:block;width:100%;height:100%}
+#phase{position:absolute;top:12px;left:12px;background:rgba(20,26,31,.72);color:#fff;font-weight:800;font-size:13px;letter-spacing:.04em;text-transform:uppercase;padding:6px 10px;border-radius:8px}
+#chrono{position:absolute;top:12px;right:12px;background:rgba(20,26,31,.72);color:#fff;font-size:13px;padding:6px 10px;border-radius:8px;font-variant-numeric:tabular-nums}
+#sub{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);max-width:min(700px,92%);background:rgba(23,143,85,.92);color:#fff;font-weight:800;font-size:clamp(14px,2vw,20px);padding:10px 18px;border-radius:14px;text-align:center;opacity:0;transition:opacity .25s}
+#sub.on{opacity:1}
+#bandes:before,#bandes:after{content:"";position:absolute;left:0;right:0;height:7%;background:#000;pointer-events:none}
+#bandes:before{top:0} #bandes:after{bottom:0}
+.controls{margin:10px 16px 16px;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px 18px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.controls label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--muted)}
+.controls label b{color:var(--fg);font-weight:800;display:flex;justify-content:space-between;font-variant-numeric:tabular-nums}
+.controls input[type=range]{width:100%}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button{font:inherit;font-weight:800;border:0;border-radius:10px;padding:9px 14px;cursor:pointer;background:var(--accent);color:#fff}
+button.sec{background:transparent;color:var(--fg);border:1px solid var(--line)}
+button:focus-visible{outline:3px solid var(--accent2);outline-offset:2px}
+.note{grid-column:1/-1;font-size:12.5px;color:var(--muted);margin:0}
+@media (prefers-reduced-motion: reduce){ #sub{transition:none} }
+</style>
+<header>
+  <h1>Intro du tutoriel : ItsCirly arrive en F-150</h1>
+  <p>Prévisualisation de la chorégraphie codée dans <code>ClientTutoriel</code> (mêmes courbes, vitesses, dérapage et rebond). Plot de type A, décor simplifié.</p>
+</header>
+<div id="scene">
+  <div id="bandes"></div>
+  <div id="phase">Noir</div>
+  <div id="chrono">0,0 s</div>
+  <div id="sub"></div>
+</div>
+<div class="controls">
+  <div class="row" style="grid-column:1/-1">
+    <button id="play">▶ Rejouer</button>
+    <button id="pause" class="sec">Pause</button>
+    <button id="cam" class="sec">Caméra : plans du tutoriel</button>
+    <span style="color:var(--muted);font-size:13px">Caméra libre : glisser pour tourner, molette pour zoomer.</span>
+  </div>
+  <label><b>Vitesse de lecture <span id="v_speed">1,0×</span></b><input id="speed" type="range" min="0.25" max="2" step="0.25" value="1"></label>
+  <label><b>Dérive (survirage) <span id="v_derive">32°</span></b><input id="derive" type="range" min="10" max="50" step="1" value="32"></label>
+  <label><b>Roulis (deux roues) <span id="v_roulis">26°</span></b><input id="roulis" type="range" min="8" max="40" step="1" value="26"></label>
+  <label><b>Durée sur deux roues <span id="v_duree">0,45 s</span></b><input id="duree" type="range" min="0.15" max="1.5" step="0.05" value="0.45"></label>
+  <label><b>Glissement d'ItsCirly <span id="v_glisse">5,5 studs</span></b><input id="glisse" type="range" min="0" max="9" step="0.5" value="5.5"></label>
+  <p class="note">Les quatre réglages correspondent à la table <code>PICKUP</code> de <code>ClientTutoriel</code> (derive, roulis, dureeDeuxRoues, glisse). Dis-moi les valeurs qui te plaisent et je les reporte dans le code.</p>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function(){
+const CASE=15, DEMI=7.5;
+const monde=(x,z,y)=>new THREE.Vector3((x-0.5)*CASE, y||0, (z-0.5)*CASE-DEMI);
+// ------------------------------------------------------------------ scene
+const wrap=document.getElementById('scene');
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(2,window.devicePixelRatio||1));
+renderer.shadowMap.enabled=true;
+wrap.appendChild(renderer.domElement);
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x9fb6d6);
+scene.fog=new THREE.Fog(0x9fb6d6,260,700);
+const camera=new THREE.PerspectiveCamera(62,16/9,0.5,2000);
+const sun=new THREE.DirectionalLight(0xffffff,1.0); sun.position.set(120,180,80); sun.castShadow=true;
+sun.shadow.mapSize.set(2048,2048); const sc=sun.shadow.camera; sc.left=-220;sc.right=220;sc.top=220;sc.bottom=-220;sc.far=600;
+scene.add(sun); scene.add(new THREE.HemisphereLight(0xdfe9ff,0x6b7a4a,0.75));
+const mat=(c,r)=>new THREE.MeshStandardMaterial({color:c,roughness:r==null?0.9:r,metalness:0.05});
+const box=(w,h,d,c,r)=>{const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat(c,r));m.castShadow=true;m.receiveShadow=true;return m;};
+// sol : herbe
+const herbe=new THREE.Mesh(new THREE.PlaneGeometry(1400,1400),mat(0x7a9a52)); herbe.rotation.x=-Math.PI/2; herbe.receiveShadow=true; scene.add(herbe);
+// branche (route) le long de X<0 : chaussee 50 de large centree a x=-41, trottoir 15.9 de x=-15.9 a 0
+const route=new THREE.Mesh(new THREE.PlaneGeometry(50,900),mat(0x3d4047,0.95)); route.rotation.x=-Math.PI/2; route.position.set(-41,0.05,200); route.receiveShadow=true; scene.add(route);
+const trottoir=box(15.9,1.2,900,0xb9b4a6); trottoir.position.set(-7.95,0.6,200); scene.add(trottoir);
+// route du tour le long de Z<0
+const tour=new THREE.Mesh(new THREE.PlaneGeometry(900,50),mat(0x3d4047,0.95)); tour.rotation.x=-Math.PI/2; tour.position.set(200,0.05,-41); tour.receiveShadow=true; scene.add(tour);
+const trottoir2=box(900,1.2,15.9,0xb9b4a6); trottoir2.position.set(200,0.6,-7.95); scene.add(trottoir2);
+// ouverture de l'entree dans le trottoir (rangees 4-5) : on peint une dalle de goudron par-dessus
+const ouverture=box(16,1.3,30,0x33363c); ouverture.position.set(-7.95,0.62,52.5); scene.add(ouverture);
+// plot : goudron rangees 3-6 colonnes 1-11, sortie colonnes 10-11 rangees 1-2
+for(let x=1;x<=11;x++)for(let z=3;z<=6;z++){const d=box(CASE-0.4,0.5,CASE-0.4,0x45484f); const p=monde(x,z,0.25); d.position.copy(p); scene.add(d);}
+for(const z of [1,2])for(const x of [10,11]){const d=box(CASE-0.4,0.5,CASE-0.4,0x45484f); d.position.copy(monde(x,z,0.25)); scene.add(d);}
+// station L1 (3x3 cases autour de (7,5)) : socle + portique
+const st=box(44,0.8,44,0x8c9aa6); st.position.copy(monde(7,5,0.4)); scene.add(st);
+const portique=box(44,2,6,0x2f6db5); portique.position.copy(monde(7,5,14)); scene.add(portique);
+for(const dx of [-20,20]){const pied=box(3,14,3,0xdde3e8); const p=monde(7,5,7); pied.position.set(p.x+dx,7,p.z); scene.add(pied);}
+// boutique
+const bout=box(45,14,45,0xe6d8c3); bout.position.copy(monde(14,8,7)); scene.add(bout);
+// joueur (pion) sur le trottoir devant le plot
+const joueur=new THREE.Group(); const jb=box(2,4,1.2,0x2f6db5); jb.position.y=3.6; const jh=new THREE.Mesh(new THREE.SphereGeometry(1,16,12),mat(0xf1c7a0)); jh.position.y=6.4; joueur.add(jb,jh); joueur.position.set(-8,1.2,-20); scene.add(joueur);
+// ------------------------------------------------------------------ pick-up (27 studs)
+const PK=new THREE.Group(); scene.add(PK);
+const L=27.1, W=10.2;
+const chassis=box(W-0.6,2.2,L-1,0x2b2d33); chassis.position.set(0,2.6,0); PK.add(chassis);
+const carrosserie=box(W,3.2,L,0xc8102e,0.55); carrosserie.position.set(0,4.6,0); PK.add(carrosserie);
+const cabine=box(W-0.8,4.4,8.5,0xc8102e,0.55); cabine.position.set(0,8.4,-4.2); PK.add(cabine);
+const vitre=box(W-1.2,3.0,8.9,0x6ea0cc,0.2); vitre.position.set(0,8.9,-4.2); PK.add(vitre);
+const capot=box(W-0.6,1.2,7,0xc8102e,0.55); capot.position.set(0,6.4,-10); PK.add(capot);
+// benne : plancher a y=6.2, flancs jusqu'a 8.4, de z=0.1 a 13.5 (arriere = +Z)
+const plancher=box(W-1.6,0.4,13,0x4a4d55); plancher.position.set(0,6.3,6.8); PK.add(plancher);
+for(const sx of [-1,1]){const fl=box(0.6,2.2,13,0xc8102e,0.55); fl.position.set(sx*(W/2-0.3),7.3,6.8); PK.add(fl);}
+const ridelle=box(W,2.2,0.6,0xc8102e,0.55); ridelle.position.set(0,7.3,13.3); PK.add(ridelle);
+const phares=box(W-2,0.9,0.4,0xfff1b8,0.3); phares.position.set(0,5.4,-L/2-0.1); PK.add(phares);
+const feux=box(W-2,0.8,0.4,0xff3b2e,0.3); feux.position.set(0,6.0,L/2+0.1); PK.add(feux);
+const R=1.95, roues=[];
+for(const [sx,sz] of [[-1,-1],[1,-1],[-1,1],[1,1]]){
+  const g=new THREE.Group(); const pneu=new THREE.Mesh(new THREE.CylinderGeometry(R,R,1.9,24),mat(0x1a1a1d,0.95)); pneu.rotation.z=Math.PI/2; pneu.castShadow=true;
+  const jante=new THREE.Mesh(new THREE.CylinderGeometry(R*0.6,R*0.6,2.0,12),mat(0xc9ccd2,0.4)); jante.rotation.z=Math.PI/2;
+  g.add(pneu,jante); g.position.set(sx*(W/2-0.3),R,sz*8.6); PK.add(g); roues.push(g);
+}
+const BAS=0;  // bas des roues dans le repere du pick-up
+// ------------------------------------------------------------------ ItsCirly dans la benne
+const C=new THREE.Group(); PK.add(C);
+const tronc=box(2.0,2.6,1.1,0x1f8a4f); tronc.position.set(0,1.3,0);
+const tete=new THREE.Mesh(new THREE.SphereGeometry(0.95,18,14),mat(0xf1c7a0)); tete.position.set(0,3.2,0);
+const casquette=box(2.1,0.5,2.1,0x2b2d33); casquette.position.set(0,3.9,0);
+const jambes=[]; for(const sx of [-0.5,0.5]){const j=box(0.8,0.8,2.6,0x2c3e66); j.position.set(sx,0.4,1.4); C.add(j); jambes.push(j);}  // jambes allongees vers l'arriere (+Z local = vers la ridelle)
+const bras=[]; for(const sx of [-1.3,1.3]){const b=box(0.6,2.2,0.6,0x1f8a4f); b.position.set(sx,1.5,0); b.geometry.translate(0,-1.1,0); b.position.y=2.6; C.add(b); bras.push(b);}
+C.add(tronc,tete,casquette);
+const BENNE={zAvant:0.1+1.2, zArriere:13.5-1.0, y:8.4-0.6};
+// ------------------------------------------------------------------ trajet (points du serveur, type A)
+const XQ=-28.4, XTROT=-8, ZE=52.5;
+const pt=(x,z,dx,dz,v,derapage)=>({pos:new THREE.Vector3(x,0.6,z),dir:new THREE.Vector3(dx,0,dz).normalize(),v,derapage:!!derapage});
+const points=[];
+for(let i=5;i>=1;i--) points.push(pt(XQ, ZE+22+(i-1)*30, 0,-1, i<=2?26:34));
+points.push(pt(XTROT,ZE,1,0,24,true));
+points.push(pt(15,ZE,1,0,20,true));
+const c1=monde(3,4.5,0.6); points.push(pt(c1.x,c1.z,1,0,13,false));
+const c2=monde(3.5,6.6,0.6), park=monde(3.5,8.6,0.6); const vf=park.clone().sub(c2).normalize();
+points.push(pt(c2.x,c2.z,vf.x,vf.z,8)); points.push(pt(park.x,park.z,vf.x,vf.z,0));
+// courbe echantillonnee (meme regle que le code : Bezier cubique, poignees = corde/3)
+let chemin=[], longueur=0, sDebut=null, sFin=null, cote=1;
+function construire(){
+  chemin=[]; let s=0; let prev=points[0];
+  chemin.push({pos:prev.pos.clone(),dir:prev.dir.clone(),s:0,v:prev.v,derapage:prev.derapage});
+  for(let i=1;i<points.length;i++){
+    const P1=points[i], p0=prev.pos, p2=P1.pos, k=p2.distanceTo(p0)/3;
+    const c1=p0.clone().addScaledVector(prev.dir,k), c2=p2.clone().addScaledVector(P1.dir,-k);
+    let dernier=chemin[chemin.length-1].pos;
+    for(let j=1;j<=24;j++){const t=j/24,u=1-t;
+      const p=p0.clone().multiplyScalar(u*u*u).add(c1.clone().multiplyScalar(3*u*u*t)).add(c2.clone().multiplyScalar(3*u*t*t)).add(p2.clone().multiplyScalar(t*t*t));
+      const d=p.clone().sub(dernier); s+=d.length();
+      chemin.push({pos:p,dir:d.length()>1e-4?d.normalize():P1.dir.clone(),s,v:P1.v,derapage:P1.derapage}); dernier=p;}
+    prev=P1;}
+  longueur=s; sDebut=null;sFin=null;
+  for(const e of chemin){ if(e.derapage){ if(sDebut==null) sDebut=e.s; sFin=e.s; } }
+  let dA=null,dB=null; for(const e of chemin){ if(e.s>=sDebut&&!dA) dA=e.dir; if(e.s<=sFin) dB=e.dir; }
+  const cr=new THREE.Vector3().crossVectors(dA,dB); cote=cr.y>=0?1:-1;
+}
+construire();
+function echantillon(x){x=Math.max(0,Math.min(longueur,x)); let lo=0,hi=chemin.length-1; while(hi-lo>1){const m=(lo+hi)>>1; if(chemin[m].s<=x) lo=m; else hi=m;}
+  const a=chemin[lo],b=chemin[hi]; const t=b.s>a.s?(x-a.s)/(b.s-a.s):0; const dir=a.dir.clone().lerp(b.dir,t); return {pos:a.pos.clone().lerp(b.pos,t),dir:dir.length()>1e-4?dir.normalize():a.dir.clone(),v:a.v*(1-t)+b.v*t};}
+// ------------------------------------------------------------------ parametres et etat
+const P={derive:32*Math.PI/180, roulis:26*Math.PI/180, glisse:5.5, accel:22, dureeDeuxRoues:0.45, apex:0.45};
+const E={};
+function reset(){E.t=0;E.x=0;E.v=points[0].v;E.derive=0;E.roulis=0;E.vRoulis=0;E.enDerapage=false;E.retombe=false;E.tDeux=null;E.angle=0;E.phase='Descente de la branche';E.fini=false;E.tFin=null;E.sub=null;E.subUntil=0;E.camMode='suivi';E.camPos=null;E.noir=1;E.dialogue=0;E.cfPos=chemin[0].pos.clone();E.cfDir=chemin[0].dir.clone();E.cote=cote;}
+reset();
+const DIALOGUE=[ // (apres le parking) les lignes du tutoriel
+  {d:0.3,t:"Hey ! Moi c'est ItsCirly. Bienvenue à STATION TYCOON !",anim:'wave',dur:2.6},
+  {d:3.3,t:"Tu vois ce terrain ? C'est le TIEN. Je t'ai préparé une petite station pour démarrer.",anim:'point',dur:3.0},
+  {d:6.8,t:"Je te montre comment ça marche, vite fait : le premier client arrive dans une minute !",anim:'cheer',dur:3.0},
+];
+function dire(txt,dur){E.sub=txt;E.subUntil=E.t+dur;}
+let anim='sit';
+// ------------------------------------------------------------------ pose du pick-up et de Cirly
+function poser(pos,dir,derive,roulis){
+  // repere : regarde dir ; Three regarde -Z par defaut comme Roblox
+  const base=new THREE.Matrix4().lookAt(pos,pos.clone().add(dir),new THREE.Vector3(0,1,0));
+  const q=new THREE.Quaternion().setFromRotationMatrix(base);
+  q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),derive));
+  PK.position.copy(pos); PK.quaternion.copy(q);
+  if(Math.abs(roulis)>1e-3){ // pivot : ligne de contact des roues exterieures (cote exterieur du virage)
+    const demi=W/2-0.4; const axe=new THREE.Vector3(E.cote*demi,BAS,0);
+    const rot=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1),roulis);
+    const off=axe.clone().sub(axe.clone().applyQuaternion(rot));
+    PK.quaternion.multiply(rot); PK.position.add(off.applyQuaternion(q));
+  }
+  for(const g of roues) g.rotation.x=E.angle;
+}
+function poserCirly(glisse,penche,saut,versJoueur,lateral){
+  const g=Math.max(0,Math.min(1.35,glisse));
+  const z=BENNE.zAvant+1.6+(BENNE.zArriere-BENNE.zAvant-2.6)*g;
+  const chute=Math.max(0,g-1)*2.6;           // au-dela de la ridelle : il bascule par-dessus
+  C.position.set(0,BENNE.y-2.0+saut-chute,z);
+  C.rotation.set(penche,Math.PI,lateral||0);
+  if(versJoueur&&glisse<0.05){ // regarde le joueur (rotation Y seulement)
+    const wp=new THREE.Vector3(); C.getWorldPosition(wp); const cible=joueur.position.clone(); cible.y=wp.y;
+    const m=new THREE.Matrix4().lookAt(wp,cible,new THREE.Vector3(0,1,0)); const qw=new THREE.Quaternion().setFromRotationMatrix(m);
+    const qp=PK.getWorldQuaternion(new THREE.Quaternion()).invert(); C.quaternion.copy(qp.multiply(qw)); }
+  // bras : en l'air quand il glisse fort ; "wave" = un bras ; "point" = un bras tendu devant
+  const lev=Math.max(0,Math.min(1,(glisse-0.25)*2));
+  bras[0].rotation.set(-Math.PI*0.95*lev - (anim==='cheer'?2.6:0), 0, -0.4*lev);
+  bras[1].rotation.set(-Math.PI*0.95*lev - (anim==='wave'||anim==='point'?(anim==='point'?1.6:2.4+Math.sin(E.t*9)*0.5):0) - (anim==='cheer'?2.6:0), 0, 0.4*lev);
+  jambes.forEach((j,i)=>{j.rotation.x=-0.25*lev; j.position.z=1.4+0.6*lev;});
+}
+// ------------------------------------------------------------------ cameras
+let camLibre=false; let orbit={theta:0.9,phi:0.95,r:70,target:new THREE.Vector3(10,4,40),drag:false,lx:0,ly:0};
+function camSuivi(){
+  const pos=E.cfPos, q=PK.quaternion;
+  if(E.phase==='Descente de la branche'){ const off=new THREE.Vector3(12,6,-24).applyQuaternion(q); camera.fov+=(64-camera.fov)*0.1; return {eye:pos.clone().add(off),look:pos.clone().add(new THREE.Vector3(0,3,0))}; }
+  if(E.phase==='Dérapage'||E.phase==='Retombée'){ if(!E.camPos){E.camPos=pos.clone().add(new THREE.Vector3(E.cote*20,5,4).applyQuaternion(q));} camera.fov+=(72-camera.fov)*0.1; return {eye:E.camPos,look:pos.clone().add(new THREE.Vector3(0,3.5,0))}; }
+  // parking : face a la benne, cote joueur
+  const vers=joueur.position.clone().sub(park); vers.y=0; vers.normalize();
+  const eye=park.clone().add(vers.multiplyScalar(16)).add(new THREE.Vector3(0,5.5,0)); camera.fov+=(62-camera.fov)*0.1;
+  const wp=new THREE.Vector3(); C.getWorldPosition(wp);
+  return {eye,look:wp.add(new THREE.Vector3(0,1.2,0))};
+}
+let camEye=new THREE.Vector3(), camLook=new THREE.Vector3(), camInit=false;
+function majCamera(dt){
+  if(camLibre){ const t=orbit.target; camera.position.set(t.x+orbit.r*Math.sin(orbit.phi)*Math.cos(orbit.theta), t.y+orbit.r*Math.cos(orbit.phi), t.z+orbit.r*Math.sin(orbit.phi)*Math.sin(orbit.theta)); camera.lookAt(t); camera.fov+=(62-camera.fov)*0.1; camera.updateProjectionMatrix(); return; }
+  const c=camSuivi(); const k=camInit?Math.min(1,dt*9):1; camInit=true;
+  camEye.lerp(c.eye,k); camLook.lerp(c.look,k); camera.position.copy(camEye); camera.lookAt(camLook); camera.updateProjectionMatrix();
+}
+// ------------------------------------------------------------------ boucle (meme logique que roulerPickup)
+let speed=1, paused=false, last=performance.now();
+const elPhase=document.getElementById('phase'), elSub=document.getElementById('sub'), elChrono=document.getElementById('chrono');
+const noir=document.createElement('div'); noir.style.cssText='position:absolute;inset:0;background:#000;pointer-events:none;transition:opacity .5s'; wrap.appendChild(noir);
+function pas(dt){
+  E.t+=dt; E.noir=Math.max(0,E.noir-dt*2); noir.style.opacity=E.noir;
+  if(!E.fini){
+    const ech6=echantillon(E.x+6); let vCible=ech6.v;
+    if(vCible<0.5&&longueur-E.x<18) vCible=Math.max(1.5,(longueur-E.x)*0.9);
+    const dv=vCible-E.v; E.v+=Math.max(-P.accel*1.8*dt,Math.min(P.accel*dt,dv)); E.x+=E.v*dt;
+    const ech=echantillon(E.x); E.cfPos=ech.pos; E.cfDir=ech.dir;
+    const dansZone=sDebut!=null&&E.x>=sDebut&&E.x<=sFin;
+    if(dansZone&&!E.enDerapage){E.enDerapage=true;E.phase='Dérapage';anim='cheer';dire("WOOOOH !! Doucement, DOUCEMENT !",1.6);}
+    // survirage pendant toute la glissade ; DEUX ROUES = une impulsion breve au sommet du virage (apex), puis retombee seche
+    const apex=sDebut!=null?sDebut+(sFin-sDebut)*P.apex:null;
+    if(apex!=null&&E.tDeux==null&&E.x>=apex) E.tDeux=0;
+    const surDeuxRoues=E.tDeux!=null&&E.tDeux<P.dureeDeuxRoues;
+    if(E.tDeux!=null) E.tDeux+=dt;
+    const cibleDerive=dansZone?E.cote*P.derive:0, cibleRoulis=surDeuxRoues?-E.cote*P.roulis:0;
+    E.derive+=(cibleDerive-E.derive)*Math.min(1,dt*(dansZone?6:4));
+    if(surDeuxRoues){E.roulis+=(cibleRoulis-E.roulis)*Math.min(1,dt*16);E.vRoulis=0;}
+    else { const acc=-E.roulis*260-E.vRoulis*13; E.vRoulis+=acc*dt; E.roulis+=E.vRoulis*dt;
+      if(E.tDeux!=null&&!E.retombe&&E.tDeux>P.dureeDeuxRoues&&Math.abs(E.roulis)<P.roulis*0.3){E.retombe=true;E.phase='Retombée';anim='sit';dire("...Ouf. Ça va, ça va. Je gère.",1.8);} }
+    E.angle-=(E.v*dt)/R;
+    poser(E.cfPos,E.cfDir,E.derive,E.roulis);
+    const r=Math.abs(E.roulis)/P.roulis;
+    const saut=(E.tDeux!=null&&!E.retombe)?Math.min(1.4,Math.abs(E.vRoulis)*0.15):0;
+    // a moitie dehors : il depasse la ridelle (glisse > 1), bascule en arriere par-dessus, penche aussi vers l'exterieur
+    poserCirly(Math.min(1.35,r*1.7*(P.glisse/5.5)),-r*1.25,saut,false,E.roulis*0.9);
+    if(E.x>=longueur-0.05){E.fini=true;E.tFin=E.t;E.phase='Garé : accueil depuis la benne';E.derive=0;E.roulis=0;poser(park.clone().setY(0.6),vf,0,0);}
+    else if(E.retombe&&E.v<12&&E.phase==='Retombée'){E.phase='Vers le parking';}
+  } else {
+    poserCirly(0,0,0,true,0);
+    const tf=E.t-E.tFin; const d=DIALOGUE[E.dialogue];
+    if(d&&tf>=d.d){anim=d.anim;dire(d.t,d.dur);E.dialogue++;}
+    if(E.dialogue>=DIALOGUE.length&&tf>DIALOGUE[DIALOGUE.length-1].d+DIALOGUE[DIALOGUE.length-1].dur+0.6){anim='sit';}
+  }
+  elPhase.textContent=E.phase; elChrono.textContent=E.t.toFixed(1).replace('.',',')+' s';
+  if(E.sub&&E.t<E.subUntil){elSub.textContent=E.sub;elSub.classList.add('on');} else elSub.classList.remove('on');
+}
+function frame(now){
+  const dtReel=Math.min(0.05,(now-last)/1000); last=now;
+  if(!paused) pas(dtReel*speed);
+  majCamera(dtReel);
+  renderer.render(scene,camera); requestAnimationFrame(frame);
+}
+function taille(){const w=wrap.clientWidth,h=wrap.clientHeight; renderer.setSize(w,h,false); camera.aspect=w/h; camera.updateProjectionMatrix();}
+window.addEventListener('resize',taille); taille();
+poser(chemin[0].pos,chemin[0].dir,0,0); poserCirly(0,0,0,false,0);
+requestAnimationFrame(frame);
+// ------------------------------------------------------------------ commandes
+const $=id=>document.getElementById(id);
+$('play').onclick=()=>{reset();E.noir=1;paused=false;camInit=false;};
+$('pause').onclick=()=>{paused=!paused;$('pause').textContent=paused?'Reprendre':'Pause';};
+$('cam').onclick=()=>{camLibre=!camLibre;$('cam').textContent=camLibre?'Caméra : libre (orbite)':'Caméra : plans du tutoriel';camInit=false;};
+$('speed').oninput=e=>{speed=+e.target.value;$('v_speed').textContent=speed.toFixed(2).replace(/\.?0+$/,'').replace('.',',')+'×';};
+$('derive').oninput=e=>{P.derive=+e.target.value*Math.PI/180;$('v_derive').textContent=e.target.value+'°';};
+$('roulis').oninput=e=>{P.roulis=+e.target.value*Math.PI/180;$('v_roulis').textContent=e.target.value+'°';};
+$('duree').oninput=e=>{P.dureeDeuxRoues=+e.target.value;$('v_duree').textContent=(+e.target.value).toFixed(2).replace('.',',')+' s';};
+$('glisse').oninput=e=>{P.glisse=+e.target.value;$('v_glisse').textContent=(+e.target.value).toFixed(1).replace('.',',')+' studs';};
+// orbite libre
+const cv=renderer.domElement;
+cv.addEventListener('pointerdown',e=>{if(!camLibre)return;orbit.drag=true;orbit.lx=e.clientX;orbit.ly=e.clientY;cv.setPointerCapture(e.pointerId);});
+cv.addEventListener('pointermove',e=>{if(!orbit.drag)return;orbit.theta+=(e.clientX-orbit.lx)*0.006;orbit.phi=Math.max(0.15,Math.min(1.45,orbit.phi-(e.clientY-orbit.ly)*0.006));orbit.lx=e.clientX;orbit.ly=e.clientY;});
+cv.addEventListener('pointerup',()=>orbit.drag=false);
+cv.addEventListener('wheel',e=>{if(!camLibre)return;e.preventDefault();orbit.r=Math.max(20,Math.min(300,orbit.r*(1+e.deltaY*0.001)));},{passive:false});
+})();
+</script>

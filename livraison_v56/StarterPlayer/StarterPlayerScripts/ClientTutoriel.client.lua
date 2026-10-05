@@ -611,9 +611,12 @@ end
 -- ----------------------------------------------------------------------------------------------------------------------
 local PICKUP = {
 	longueur = 27.1,             -- studs (F-150 5,91 m x 4,59 ; repris de Catalogue/Car si disponible)
-	derive = math.rad(32),       -- angle de survirage pendant le derapage
-	roulis = math.rad(24),       -- inclinaison sur deux roues
-	glisse = 5.5,                -- studs : glissement d'ItsCirly vers la ridelle au plus fort du roulis
+	derive = math.rad(32),       -- angle de survirage pendant la glissade (toute la zone "derapage" : trottoir -> entree)
+	roulis = math.rad(26),       -- inclinaison sur deux roues
+	dureeDeuxRoues = 0.45,       -- secondes : le passage sur deux roues est UNE IMPULSION BREVE au sommet du virage (Thomas :
+	                             -- "tres leger, tres rapide"), puis retombee seche avec un petit rebond
+	apex = 0.45,                 -- position du sommet du virage dans la zone de derapage (0 = debut, 1 = fin)
+	glisse = 5.5,                -- studs : glissement d'ItsCirly vers la ridelle ; il DEPASSE la ridelle (a moitie dehors)
 	accel = 22,                  -- studs/s^2
 }
 
@@ -698,13 +701,15 @@ local function dansLaBenne(PK, regarderVers)
 	local guide = S.guide
 	if not (guide and PK) then return function() end end
 	animer("sit", true)
-	PK.glisse, PK.penche, PK.saut = 0, 0, 0
+	PK.glisse, PK.penche, PK.saut, PK.lateral = 0, 0, 0, 0
 	local nom = "TutoBenne"
 	RunService:BindToRenderStep(nom, Enum.RenderPriority.Camera.Value - 1, function()
 		if not (PK.modele.Parent and guide.Parent and PK.cfCourant) then return end
 		local b = PK.benne
-		local z = b.zAvant + 1.6 + (b.zArriere - b.zAvant - 2.6) * math.clamp(PK.glisse, 0, 1)
-		local cf = PK.cfCourant * CFrame.new(0, b.y + 1.1 + PK.saut, z) * CFrame.Angles(0, math.pi, 0) * CFrame.Angles(PK.penche, 0, 0)
+		local g = math.clamp(PK.glisse, 0, 1.35)
+		local z = b.zAvant + 1.6 + (b.zArriere - b.zAvant - 2.6) * g
+		local chute = math.max(0, g - 1) * 2.6                      -- au-dela de la ridelle : il bascule par-dessus
+		local cf = PK.cfCourant * CFrame.new(0, b.y + 1.1 + PK.saut - chute, z) * CFrame.Angles(0, math.pi, 0) * CFrame.Angles(PK.penche, 0, PK.lateral or 0)
 		if regarderVers and PK.glisse < 0.05 then
 			local p = cf.Position
 			local cible = Vector3.new(regarderVers.X, p.Y, regarderVers.Z)
@@ -765,6 +770,8 @@ local function roulerPickup(PK, points, onDerapage, onRetombe)
 	local derive, roulis, saut = 0, 0, 0
 	local enDerapage, retombe = false, false
 	local vRoulis = 0
+	local apex = sDebut and (sDebut + (sFin - sDebut) * PICKUP.apex) or nil
+	local tDeux = nil            -- chrono de l'impulsion "deux roues" (nil tant qu'on n'a pas passe l'apex)
 	poserPickup(PK, CFrame.lookAt(chemin[1].pos, chemin[1].pos + chemin[1].dir), 0, 0, cote)
 	local t0 = os.clock()
 	while x < longueur - 0.05 and PK.modele.Parent and os.clock() - t0 < 40 do
@@ -779,35 +786,41 @@ local function roulerPickup(PK, points, onDerapage, onRetombe)
 		-- derapage : dans la zone, la derive et le roulis montent ; en sortant, retombee avec rebond (ressort amorti)
 		local dansZone = sDebut and x >= sDebut and x <= sFin
 		if dansZone and not enDerapage then enDerapage = true; if onDerapage then task.spawn(onDerapage, cote) end end
+		-- survirage pendant toute la glissade ; DEUX ROUES = impulsion breve au sommet du virage, puis retombee seche
+		if apex and not tDeux and x >= apex then tDeux = 0 end
+		local surDeuxRoues = tDeux ~= nil and tDeux < PICKUP.dureeDeuxRoues
+		if tDeux then tDeux += dt end
 		local cibleDerive = dansZone and cote * PICKUP.derive or 0
-		local cibleRoulis = dansZone and -cote * PICKUP.roulis or 0
-		derive += (cibleDerive - derive) * math.min(1, dt * (dansZone and 5 or 4))
-		if dansZone then
-			roulis += (cibleRoulis - roulis) * math.min(1, dt * 4)
+		local cibleRoulis = surDeuxRoues and -cote * PICKUP.roulis or 0
+		derive += (cibleDerive - derive) * math.min(1, dt * (dansZone and 6 or 4))
+		if surDeuxRoues then
+			roulis += (cibleRoulis - roulis) * math.min(1, dt * 16)      -- monte d'un coup
 			vRoulis = 0
 		else
-			-- ressort : le pick-up retombe sur ses roues, petit rebond
-			local acc = -roulis * 140 - vRoulis * 11
+			-- ressort raide : le pick-up retombe sur ses roues, un petit rebond et c'est fini
+			local acc = -roulis * 260 - vRoulis * 13
 			vRoulis += acc * dt
 			roulis += vRoulis * dt
-			if enDerapage and not retombe and math.abs(roulis) < PICKUP.roulis * 0.25 then retombe = true; if onRetombe then task.spawn(onRetombe) end end
+			if tDeux and not retombe and tDeux > PICKUP.dureeDeuxRoues and math.abs(roulis) < PICKUP.roulis * 0.3 then retombe = true; if onRetombe then task.spawn(onRetombe) end end
 		end
-		saut = math.max(0, math.abs(roulis) - PICKUP.roulis * 0.7) * 2
+		saut = 0
 		-- roues : rotation selon la distance (rayon de la premiere roue)
 		local rayon = PK.roues[1] and PK.roues[1].rayon or 2
 		PK.angle -= (v * dt) / rayon
 		poserPickup(PK, cf, derive, roulis, cote)
-		-- ItsCirly : glisse vers la ridelle avec le roulis, penche, saute un peu a la retombee
+		-- ItsCirly : A MOITIE DEHORS au plus fort du roulis : il glisse jusqu'a depasser la ridelle (glisse > 1), bascule en
+		-- arriere par-dessus (penche), penche aussi vers l'exterieur (lateral), et saute un peu a la retombee
 		local r = math.abs(roulis) / PICKUP.roulis
-		PK.glisse = math.clamp(r * 1.15, 0, 1)
-		PK.penche = -roulis * 0.9
-		PK.saut = (not dansZone and enDerapage and not retombe) and math.clamp(math.abs(vRoulis) * 0.2, 0, 1.2) or 0
+		PK.glisse = math.clamp(r * 1.7 * (PICKUP.glisse / 5.5), 0, 1.35)
+		PK.penche = -r * 1.25
+		PK.lateral = roulis * 0.9
+		PK.saut = (tDeux and not retombe) and math.clamp(math.abs(vRoulis) * 0.15, 0, 1.4) or 0
 		PK.vitesse = v
 	end
 	-- arret propre
 	local fin = points[#points].cf
 	poserPickup(PK, fin, 0, 0, cote)
-	PK.glisse, PK.penche, PK.saut = 0, 0, 0
+	PK.glisse, PK.penche, PK.saut, PK.lateral = 0, 0, 0, 0
 end
 
 -- ItsCirly assis sur le toit de la voiture, cote client (chaque image)
