@@ -1,5 +1,8 @@
 # Dossier de transfert — Station Tycoon (session « CODE », build v55, 05/10/2026)
 
+> **Mise à jour 05/10/2026 (nuit) : lot v56.** Lis d'abord `COMPTE_RENDU_v56.md` (étapes Studio, bugs corrigés, décisions),
+> puis `2_documents/ECONOMIE_v56.md`. Les scripts à coller sont dans `livraison_v56/`, le jeu complet dans `1_scripts_v56/`.
+
 À lire dans cet ordre :
 
 1. **`transfert-roblox.md`** — le document de transfert complet (le jeu, l'organisation, l'état du code / de la map / de

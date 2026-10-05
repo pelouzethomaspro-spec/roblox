@@ -1,0 +1,269 @@
+--[[ Diagnostic (ModuleScript, ServerScriptService) — v55 : analyse du plot pour les modes CIRCULATION et DECORATION
+	de l'onglet Construction (ClientDiagnostic affiche le resultat en plaques au sol).
+	RemoteFunction ReplicatedStorage.DiagnosticFunction(mode) :
+	  mode "circulation" -> { vert = {{x,z},...}, bleu = {{x,z},...}, rouge = {{x,z},...}, infos = {...} }
+	      vert  : cases du couloir entree -> chaque station -> sortie (voitures)
+	      bleu  : cases du chemin a pied station -> caisse la plus proche (clients)
+	      rouge : cases "barrees" : la ou un couloir / un chemin s'interrompt (entree de station non desservie, sortie de
+	              station sans chemin vers la sortie du plot, station sans caisse joignable, entree du plot sans station)
+	  mode "decoration"  -> { cases = {{x, z, valeur}, ...} }   valeur < 0 : malus (rouge), > 0 : bonus (vert)
+	      chaque station et meuble de stockage emet un malus sur 3 anneaux de cases autour de lui (fort / moyen / faible),
+	      chaque meuble de la famille "plantes" / "barrieres" (et plus tard la categorie Decoration) emet un bonus.
+	Tout est calcule a partir de la grille du joueur (PlayerData) et des noeuds du PlotSpawn (Acces).
+]]
+local Diagnostic = {}
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local PlayerData = require(ServerScriptService:WaitForChild("PlayerData"))
+local Circulation = require(ServerScriptService:WaitForChild("Circulation"))
+local PlotManager = require(ServerScriptService:WaitForChild("PlotManager"))
+local CarManager = require(ServerScriptService:WaitForChild("CarManager"))
+local Catalogue = require(ReplicatedStorage:WaitForChild("Catalogue"))
+local Demi = require(ReplicatedStorage:WaitForChild("Demi"))
+
+-- rayons du malus (cases, distance de Chebyshev depuis les cases du meuble) et intensites
+Diagnostic.MALUS = { {1, -3}, {2, -2}, {3, -1} }
+Diagnostic.BONUS = { {1, 2}, {2, 1} }
+-- familles du catalogue Furniture qui comptent comme decoration (bonus) tant qu'il n'y a pas de categorie Decoration
+local FAMILLES_DECO = { plantes = true, barrieres = true }
+
+local function cle(x, z) return x * 1000 + z end
+
+local function ajouter(ensemble, x, z) ensemble[cle(x, z)] = {x, z} end
+
+local function liste(ensemble)
+	local out = {}
+	for _, c in pairs(ensemble) do table.insert(out, c) end
+	return out
+end
+
+-- cases d'un chemin de blocs
+local function casesBlocs(chemin, ensemble)
+	for _, b in ipairs(chemin) do
+		ajouter(ensemble, b[1], b[2]); ajouter(ensemble, b[1] + 1, b[2]); ajouter(ensemble, b[1], b[2] + 1); ajouter(ensemble, b[1] + 1, b[2] + 1)
+	end
+end
+
+-- les 2 cases d'un bloc les plus proches d'un point (repere du plot)
+local function deuxCasesVers(bloc, carte, pivot, position)
+	local l = pivot:PointToObjectSpace(position)
+	local cases = { {bloc[1], bloc[2]}, {bloc[1] + 1, bloc[2]}, {bloc[1], bloc[2] + 1}, {bloc[1] + 1, bloc[2] + 1} }
+	table.sort(cases, function(a, b)
+		local da = (Vector3.new((a[1] - 0.5) * 15, 0, (a[2] - 0.5) * 15 - 7.5) - Vector3.new(l.X, 0, l.Z)).Magnitude
+		local db = (Vector3.new((b[1] - 0.5) * 15, 0, (b[2] - 0.5) * 15 - 7.5) - Vector3.new(l.X, 0, l.Z)).Magnitude
+		return da < db
+	end)
+	return { cases[1], cases[2] }
+end
+
+function Diagnostic.Circulation(player)
+	local spawnFolder = PlotManager.SpawnFolderDe(player)
+	local data = PlayerData.GetData(player)
+	local carte = Circulation.Carte(player)
+	if not (spawnFolder and data and carte) then return { vert = {}, bleu = {}, rouge = {}, infos = {} } end
+	local pc = spawnFolder:FindFirstChild("PlotCenter")
+	local pivot = pc:GetPivot()
+	local vert, bleu, rouge = {}, {}, {}
+	local infos = { stations = 0, desservies = 0, sorties = 0, caisses = 0 }
+	local entrees = Circulation.Entrees(carte, pivot, spawnFolder)
+	local sorties = Circulation.Sorties(carte, pivot, spawnFolder)
+	-- entree / sortie du plot elles-memes
+	for _, e in ipairs(entrees) do ajouter(vert, e[1], e[2]); ajouter(vert, e[1] + 1, e[2]); ajouter(vert, e[1], e[2] + 1); ajouter(vert, e[1] + 1, e[2] + 1) end
+	for _, s in ipairs(sorties) do ajouter(vert, s[1], s[2]); ajouter(vert, s[1] + 1, s[2]); ajouter(vert, s[1], s[2] + 1); ajouter(vert, s[1] + 1, s[2] + 1) end
+	local auMoinsUne = false
+	local nx, nz = PlayerData.GetPlotSize(player)
+	local grid = PlayerData.GetGrid(player)
+	local demi = PlayerData.GetDemi and PlayerData.GetDemi(player, false) or nil
+	for id, st in pairs(data.Stations or {}) do
+		infos.stations += 1
+		local cf = CarManager.CfStation and CarManager.CfStation(player, id)
+		if cf then
+			local cfEntree, cfSortie = Circulation.PointsStation(cf)
+			-- ALLER : une entree du plot -> l'entree de la station
+			local ok, aller = Circulation.StationDesservie(carte, pivot, spawnFolder, cf)
+			if ok then
+				infos.desservies += 1; auMoinsUne = true
+				casesBlocs(aller, vert)
+			else
+				local bloc = Circulation.BlocsStation(carte, pivot, cfEntree)[1]
+				if bloc then for _, c in ipairs(deuxCasesVers(bloc, carte, pivot, cf.Position)) do ajouter(rouge, c[1], c[2]) end end
+			end
+			-- RETOUR : la sortie de la station -> une sortie du plot
+			local retour = Circulation.CheminSortie(carte, pivot, spawnFolder, cf)
+			if retour then
+				infos.sorties += 1
+				casesBlocs(retour, vert)
+			else
+				local bloc = Circulation.BlocsStation(carte, pivot, cfSortie)[1]
+				if bloc then for _, c in ipairs(deuxCasesVers(bloc, carte, pivot, cf.Position)) do ajouter(rouge, c[1], c[2]) end end
+			end
+			-- PIETON : du centre de la station a la caisse la plus proche (meme regle que CarManager)
+			local startX, startZ = st.X, st.Z
+			local infosMeuble = Catalogue.GetInfo("Furniture", st.Name)
+			if not (infosMeuble and infosMeuble.Pivot == "centre") then
+				if st.Orientation == 0 or st.Orientation == 3 then startX, startZ = st.X + 1, st.Z - 1 else startX, startZ = st.X - 1, st.Z + 1 end
+			end
+			local meilleur = nil
+			for _, caisse in pairs(data.Caisses or {}) do
+				local cibleX, cibleZ
+				if caisse.Demi and caisse.CX then
+					local dX, dZ = 0, 0
+					if caisse.Orientation == 0 then dX = -1 elseif caisse.Orientation == 2 then dX = 1 elseif caisse.Orientation == 3 then dZ = -1 else dZ = 1 end
+					cibleX = math.ceil((caisse.CX + dX * ((caisse.DX or 1) / 2 + 0.5)) / 2)
+					cibleZ = math.ceil((caisse.CZ + dZ * ((caisse.DZ or 1) / 2 + 0.5)) / 2)
+				elseif caisse.Orientation == 0 then cibleX, cibleZ = caisse.X - 1, caisse.Z
+				elseif caisse.Orientation == 3 then cibleX, cibleZ = caisse.X, caisse.Z - 1
+				elseif caisse.Orientation == 2 then cibleX, cibleZ = caisse.X + 1, caisse.Z
+				else cibleX, cibleZ = caisse.X, caisse.Z + 1 end
+				local okP, chemin = Circulation.CheminPieton(grid, nx, nz, startX, startZ, cibleX, cibleZ, true, demi)
+				if okP and chemin and (not meilleur or #chemin < #meilleur) then meilleur = chemin end
+			end
+			if meilleur then
+				for _, c in ipairs(meilleur) do ajouter(bleu, c.x, c.z) end
+			else
+				ajouter(rouge, startX, startZ)
+			end
+		end
+	end
+	for _ in pairs(data.Caisses or {}) do infos.caisses += 1 end
+	-- aucune station desservie : l'entree du plot est barree
+	if infos.stations > 0 and not auMoinsUne then
+		for _, e in ipairs(entrees) do ajouter(rouge, e[1] + (e[1] == 1 and 1 or 0), e[2]); ajouter(rouge, e[1] + (e[1] == 1 and 1 or 0), e[2] + 1) end
+	end
+	if #entrees == 0 then infos.sansEntree = true end
+	-- le rouge l'emporte sur le vert / le bleu
+	for k in pairs(rouge) do vert[k] = nil; bleu[k] = nil end
+	return { vert = liste(vert), bleu = liste(bleu), rouge = liste(rouge), infos = infos }
+end
+
+-- cases d'un meuble (grille principale) : stations (grille de 15) et petits meubles (demi-grille) -> cases de 15
+local function casesMeubles(player)
+	local grid = PlayerData.GetGrid(player)
+	local nx, nz = PlayerData.GetPlotSize(player)
+	local demi = PlayerData.GetDemi and PlayerData.GetDemi(player, false) or {}
+	local meubles = {}          -- [id] = { nom = , cases = {{x,z}} }
+	for x = 1, nx do
+		for z = 1, nz do
+			local c = grid[x] and grid[x][z]
+			if c and c.Furniture ~= 0 and c.Furniture ~= nil then
+				local id = type(c.FurnitureID) == "string" and (string.match(c.FurnitureID, "^C%d_(.+)$") or c.FurnitureID) or tostring(c.FurnitureID)
+				meubles[id] = meubles[id] or { nom = c.Furniture, cases = {} }
+				table.insert(meubles[id].cases, {x, z})
+			end
+		end
+	end
+	for k, c in pairs(demi) do
+		local hx, hz = string.match(k, "^(%-?%d+)_(%-?%d+)$")
+		if hx then
+			local x, z = Demi.CaseMere(tonumber(hx), tonumber(hz))
+			local id = type(c.FurnitureID) == "string" and (string.match(c.FurnitureID, "^C%d_(.+)$") or c.FurnitureID) or tostring(c.FurnitureID)
+			meubles[id] = meubles[id] or { nom = c.Furniture, cases = {} }
+			local deja = false
+			for _, q in ipairs(meubles[id].cases) do if q[1] == x and q[2] == z then deja = true end end
+			if not deja then table.insert(meubles[id].cases, {x, z}) end
+		end
+	end
+	return meubles, nx, nz
+end
+
+function Diagnostic.Decoration(player)
+	local meubles, nx, nz = casesMeubles(player)
+	if not nx then return { cases = {} } end
+	local valeurs = {}
+	local function etaler(cases, table_)
+		for _, rayons in ipairs(table_) do
+			local r, v = rayons[1], rayons[2]
+			for _, c in ipairs(cases) do
+				for dx = -r, r do
+					for dz = -r, r do
+						if math.max(math.abs(dx), math.abs(dz)) == r then
+							local x, z = c[1] + dx, c[2] + dz
+							if x >= 1 and z >= 1 and x <= nx and z <= nz then
+								-- une case deja dans un anneau plus proche garde la valeur la plus forte
+								local k = cle(x, z)
+								local actuel = valeurs[k]
+								if not actuel then valeurs[k] = {x, z, v}
+								elseif (v < 0 and actuel[3] <= 0) then actuel[3] = math.min(actuel[3], v) + (actuel[3] < 0 and v * 0.25 or 0)
+								elseif (v > 0 and actuel[3] >= 0) then actuel[3] = math.max(actuel[3], v) + (actuel[3] > 0 and v * 0.25 or 0)
+								else actuel[3] = actuel[3] + v end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+	for _, m in pairs(meubles) do
+		local infos = Catalogue.GetInfo("Furniture", m.nom)
+		if infos then
+			if infos.Type == "Station" or infos.Stockage then
+				etaler(m.cases, Diagnostic.MALUS)
+			elseif infos.Decoration or (infos.Famille and FAMILLES_DECO[infos.Famille]) then
+				etaler(m.cases, Diagnostic.BONUS)
+			end
+		end
+	end
+	-- les cases du meuble lui-meme sont neutres (on ne colore pas sous les meubles)
+	for _, m in pairs(meubles) do for _, c in ipairs(m.cases) do valeurs[cle(c[1], c[2])] = nil end end
+	local cases = {}
+	for _, v in pairs(valeurs) do if v[3] ~= 0 then table.insert(cases, { v[1], v[2], math.clamp(v[3], -3, 3) }) end end
+	return { cases = cases }
+end
+
+-- v55 : effet de la decoration sur la cadence des clients. Somme des cases colorees (vert > 0, rouge < 0, le rouge
+-- compte un quart) ramenee a un multiplicateur 0,85 .. 1,5 ; une station nue (-80 avec le quart : -20) donne 0,93.
+function Diagnostic.ScoreDecoration(player)
+	local res = Diagnostic.Decoration(player)
+	local total = 0
+	for _, c in ipairs(res.cases or {}) do total += (c[3] > 0) and c[3] or c[3] * 0.25 end
+	return total
+end
+function Diagnostic.MultiplicateurDecoration(player)
+	local ok, score = pcall(Diagnostic.ScoreDecoration, player)
+	if not ok then return 1 end
+	return math.clamp(1 + score / 300, 0.85, 1.5)
+end
+
+-- v55 : panneaux publicitaires poses dans l'annexe (champ Clients du catalogue, somme = 1 pour les 9) -> 1 .. 2
+function Diagnostic.MultiplicateurPub(player)
+	local demi = PlayerData.GetDemi and PlayerData.GetDemi(player, true) or {}
+	local vus, total = {}, 0
+	for _, c in pairs(demi) do
+		local id = type(c.FurnitureID) == "string" and (string.match(c.FurnitureID, "^C%d_(.+)$") or c.FurnitureID) or tostring(c.FurnitureID)
+		if not vus[id] then
+			vus[id] = true
+			local infos = Catalogue.GetInfo("Furniture", c.Furniture)
+			if infos and infos.Clients then total += infos.Clients end
+		end
+	end
+	return 1 + math.clamp(total, 0, 1)
+end
+
+-- cadence (secondes) entre deux clients pour ce joueur : base du rang / (pub x deco)
+function Diagnostic.Cadence(player, base)
+	local m = Diagnostic.MultiplicateurPub(player) * Diagnostic.MultiplicateurDecoration(player)
+	return base / m, m
+end
+
+do
+	local f = ReplicatedStorage:FindFirstChild("DiagnosticFunction")
+	if not f then f = Instance.new("RemoteFunction"); f.Name = "DiagnosticFunction"; f.Parent = ReplicatedStorage end
+	local dernier = {}
+	game:GetService("Players").PlayerRemoving:Connect(function(p) dernier[p.UserId] = nil end)     -- v56 : nettoyage
+	f.OnServerInvoke = function(player, mode)
+		-- pas plus de 4 analyses par seconde et par joueur
+		local t = os.clock()
+		if dernier[player.UserId] and t - dernier[player.UserId] < 0.25 then task.wait(0.25) end
+		dernier[player.UserId] = os.clock()
+		local ok, res = pcall(function()
+			if mode == "decoration" then return Diagnostic.Decoration(player) end
+			return Diagnostic.Circulation(player)
+		end)
+		if not ok then warn("[Diagnostic] " .. tostring(res)); return nil end
+		return res
+	end
+end
+
+return Diagnostic

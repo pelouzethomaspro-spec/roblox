@@ -1,0 +1,719 @@
+local ClientBuild = {}
+local laser, object = nil, nil          -- v56 : etaient des globales accidentelles (laser lu dans ClicDeplacer avant sa 1re affectation)
+-- v56 : evenement "objet pose" (nom, categorie, infos) : l'UI repeint les cartes (objets uniques)
+ClientBuild.Pose = Instance.new("BindableEvent")
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local ContextActionService = game:GetService("ContextActionService")
+
+local Folder = workspace.Plots:WaitForChild(game.Players.LocalPlayer.Name .. "'s plot")
+local plotcenter = Folder:WaitForChild("PlotCenterRef").Value
+
+local ClientData = require(script.Parent:WaitForChild("ClientData"))
+local Catalogue = require(ReplicatedStorage:WaitForChild("Catalogue"))
+local Demi = require(ReplicatedStorage:WaitForChild("Demi"))          -- v54 : demi-grille (7,5) des petits meubles
+local ClientDiagnostic = nil                                            -- v55 : modes Circulation / Decoration (charge paresseusement)
+local function diagnostic()
+	if ClientDiagnostic == nil then
+		local ok, m = pcall(function() return require(script.Parent:WaitForChild("ClientDiagnostic", 10)) end)
+		ClientDiagnostic = ok and m or false
+	end
+	if ClientDiagnostic and ClientDiagnostic.Mode() then ClientDiagnostic.Rafraichir() end
+end
+
+local TemplatePrixUI = ReplicatedStorage:WaitForChild("TemplatePrixUI")
+
+local Placefunction = ReplicatedStorage:WaitForChild("Placefunction")
+local Destroyfunction = ReplicatedStorage:WaitForChild("Destroyfunction")
+local Extensionfunction = ReplicatedStorage:WaitForChild("Extensionfunction")
+local Deplacerfunction = ReplicatedStorage:WaitForChild("Deplacerfunction", 30)   -- creee par le serveur (FunctionScript)
+local AccesFunction = ReplicatedStorage:WaitForChild("AccesFunction", 30)         -- v51 : deplacement de l'entree / la sortie (Acces)
+
+-- Pose en continu : bouton enfonce + souris qui bouge = une pose a chaque nouvelle case survolee (sols, murs, toits, decor)
+local enfonce = false
+local tentes = {}             -- cases deja tentees pendant ce glisser (cle = cible arrondie + orientation)
+-- Deplacement d'un objet deja pose : l'objet ramasse (Model du plot), ses pieces rendues translucides pendant la pose
+local deplacement = nil
+local deplacementPieces = {}
+-- v51 : deplacement de l'ENTREE (le long de la branche) ou de la SORTIE (le long de la route du tour) : modeles AccesEntree /
+-- AccesSortie du PlotSpawn (attribut Categorie = "Acces"), glisses d'un bloc de 2 cases a l'autre le long de leur bord
+local accesEnCours = nil      -- {quoi = "Entree" | "Sortie", modele, index}
+local ACCES_ENTREE_MIN, ACCES_NX, ACCES_NZ = 3, 18, 32
+
+local phantom = nil
+local orientation = 0
+local retourner = false     -- murs : face avant vers l'exterieur (false) ou vers l'interieur de la case survolee (true)
+local target = nil
+local categorie = nil
+local prixUI = nil
+
+-- Hauteurs (repere du plot), identiques a PlotManager : meubles a +0.616, toits au sommet des murs de 16 studs
+local Y_MEUBLE = 0.616
+-- v48 : QUADRILLAGE DE 15 STUDS (CASE) ; DEMI = demi-case (meme valeur que PlotManager).
+local CASE = 15
+local DEMI = CASE / 2
+local Y_PLAFOND = 16.5 * 1.5          -- v48 : murs agrandis x1,5
+
+-- ======================================================================================================================
+-- GESTION DU PHANTOM
+-- ======================================================================================================================
+
+-- Case survolee : meme formule que le serveur (PlotManager.CaseDePosition). Une case (x, z) couvre X de (x-1)*10 a
+-- x*10 et Z de (z-1)*10 - 5 a z*10 - 5, la dalle etant centree sur ((x-0.5)*10, (z-1)*10).
+local function CaseDe(position: Vector3)
+	return math.floor(position.X / CASE) + 1, math.floor((position.Z + DEMI) / CASE) + 1
+end
+local function CentreCase(caseX: number, caseZ: number)
+	return (caseX - 0.5) * CASE, (caseZ - 0.5) * CASE - DEMI
+end
+
+-- Zone annexe 3 x 3 de l'autre cote de la route : Part "Annexe" du PlotSpawn (30 x 30, meme orientation que le plot).
+-- Meme decalage que le serveur (PlotManager.DecalageAnnexe) : la case (x, z) de l'annexe est centree sur
+-- decalage + ((x-0.5)*10, y, (z-0.5)*10 - 5). Ni station ni caisse dans l'annexe (le serveur le refuse aussi).
+local ANNEXE_NX, ANNEXE_NZ = 2, 2       -- v48 : annexe de 30 x 30 = 2 x 2 cases de 15
+local function DecalageAnnexe()
+	local spawnModel = plotcenter.Parent
+	local annexe = spawnModel and spawnModel:FindFirstChild("Annexe")
+	if not (annexe and annexe:IsA("BasePart")) then return nil end
+	local c = plotcenter:GetPivot():PointToObjectSpace(annexe.Position)
+	return Vector3.new(c.X - annexe.Size.X / 2, 0, c.Z - annexe.Size.Z / 2 + DEMI)
+end
+local function DansAnnexe(positionrelative: Vector3)
+	local d = DecalageAnnexe()
+	if not d then return nil end
+	if positionrelative.X >= d.X and positionrelative.X < d.X + ANNEXE_NX * CASE
+		and positionrelative.Z >= d.Z - DEMI and positionrelative.Z < d.Z - DEMI + ANNEXE_NZ * CASE then
+		return d
+	end
+	return nil
+end
+
+-- Murs : le mur se pose sur le bord de la case le plus proche de la souris. Le serveur lit le bord avec l'orientation :
+--   0 = bord +X de la case survolee (face avant vers +X)     2 = bord -X (face avant vers -X)
+--   1 = bord -Z (face avant vers -Z)                          3 = bord +Z (face avant vers +Z)
+-- Un meme bord se decrit donc de deux facons (depuis chacune des deux cases voisines) : "retourner" choisit l'autre,
+-- ce qui inverse la face avant (poignee, decor) sans changer le bord.
+local function BordMur(positionrelative: Vector3)
+	local caseX, caseZ = CaseDe(positionrelative)
+	local cx, cz = CentreCase(caseX, caseZ)
+	local dx, dz = positionrelative.X - cx, positionrelative.Z - cz
+	local o
+	if math.abs(dx) >= math.abs(dz) then
+		o = (dx >= 0) and 0 or 2
+	else
+		o = (dz >= 0) and 3 or 1
+	end
+	if retourner then
+		-- meme bord, vu depuis la case voisine
+		if o == 0 then caseX += 1; o = 2
+		elseif o == 2 then caseX -= 1; o = 0
+		elseif o == 1 then caseZ -= 1; o = 3
+		else caseZ += 1; o = 1 end
+	end
+	return caseX, caseZ, o
+end
+
+local demiEnCours = false          -- v54 : le fantome est un meuble de la demi-grille (aimantation 7,5, cadre redecoupe)
+
+local function PositionPhantom(categorie)
+
+	local camera = workspace.CurrentCamera
+	local positionsouris = UserInputService:GetMouseLocation()
+	local ray = camera:ViewportPointToRay(positionsouris.X, positionsouris.Y)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = {phantom, game.Players.LocalPlayer.Character}
+	local positionreelle = workspace:Raycast(ray.Origin, ray.Direction * 400, params)
+
+	if not positionreelle then return nil end
+
+	local plotcenterposition = plotcenter:GetPivot()
+	local positionrelative = plotcenterposition:PointToObjectSpace(positionreelle.Position)
+	if categorie == "Acces" and accesEnCours then
+		-- glisse le long du bord : l'entree change de rangee (Z), la sortie de colonne (X) ; l'autre coordonnee est fixe
+		local rel = plotcenterposition:ToObjectSpace(accesEnCours.modele:GetPivot())
+		local idx, localPos
+		if accesEnCours.quoi == "Entree" then
+			idx = math.clamp(math.round((positionrelative.Z + DEMI) / CASE), ACCES_ENTREE_MIN, ACCES_NZ - 1)
+			localPos = Vector3.new(rel.Position.X, rel.Position.Y, CASE * idx - DEMI)
+		else
+			idx = math.clamp(math.round(positionrelative.X / CASE), 1, ACCES_NX - 1)
+			localPos = Vector3.new(CASE * idx, rel.Position.Y, rel.Position.Z)
+		end
+		accesEnCours.index = idx
+		return plotcenterposition * CFrame.new(localPos) * (rel - rel.Position)
+	end
+	local decalage = DansAnnexe(positionrelative) or Vector3.zero
+	if categorie == "Furniture" and phantom then
+		local infos = Catalogue.GetInfo("Furniture", phantom.Name)
+		if decalage ~= Vector3.zero and infos and (infos.Type == "Station" or infos.Type == "Caisse") then return nil end
+		if infos and infos.Annexe and decalage == Vector3.zero then return nil end          -- v55 : panneaux publicitaires : annexe seulement
+		if infos and type(infos.OrientationFixe) == "number" then orientation = infos.OrientationFixe % 4 end   -- v55 : face au tunnel
+	end
+	positionrelative = positionrelative - decalage
+	local caseX, caseZ, o
+	local X, Z
+	if categorie == "Mur" then
+		caseX, caseZ, o = BordMur(positionrelative)
+		orientation = o
+		X, Z = CentreCase(caseX, caseZ)
+	elseif demiEnCours then
+		-- v54 : petit meuble de la demi-grille : aimante sur les demi-cases de 7,5
+		local hx, hz = Demi.CaseDe(positionrelative)
+		X, Z = Demi.Centre(hx, hz)
+		o = orientation
+	else
+		caseX, caseZ = CaseDe(positionrelative)
+		o = orientation
+		X, Z = CentreCase(caseX, caseZ)
+	end
+
+	local Y = 0
+	if categorie == "Furniture" then
+		Y = Y_MEUBLE
+	elseif categorie == "Plafond" then
+		Y = Y_PLAFOND
+	end
+
+	return plotcenterposition * CFrame.new(decalage) * CFrame.new(X, Y, Z) * CFrame.Angles(0, math.rad(o * 90), 0)
+end
+
+local function TurnPhantom(_, etat)
+	if etat == Enum.UserInputState.Begin then
+		ClientBuild.Tourner()
+	end
+end
+
+local function cleCible(cf)
+	local p = cf.Position
+	return string.format("%d,%d,%d,%d", math.round(p.X), math.round(p.Y), math.round(p.Z), orientation)
+end
+
+-- pose (ou deplacement) a la cible actuelle ; appele au clic et pendant le glisser
+local function PoserIci()
+	if not (phantom and target) then return false, "aucun objet" end
+	if categorie == "Acces" and accesEnCours then
+		if not AccesFunction then return false, "deplacement indisponible" end
+		local ok, raison = AccesFunction:InvokeServer(accesEnCours.quoi, accesEnCours.index)
+		if ok then ClientBuild.DestroyPhantom(); diagnostic()          -- v56 : le mode Circulation suit la nouvelle entree / sortie
+		elseif prixUI then prixUI.Price.Text = "Impossible : " .. tostring(raison); prixUI.Price.TextColor3 = Color3.fromRGB(247, 85, 0) end
+		return ok, raison
+	end
+	if deplacement then
+		if not Deplacerfunction then return false, "deplacement indisponible" end
+		local ok, raison = Deplacerfunction:InvokeServer(deplacement, orientation, target)
+		if ok then ClientBuild.DestroyPhantom(); diagnostic()
+		elseif prixUI then prixUI.Price.Text = "Impossible : " .. tostring(raison); prixUI.Price.TextColor3 = Color3.fromRGB(247, 85, 0) end
+		return ok, raison
+	end
+	local nom, cat = phantom.Name, categorie
+	local succes, raison = Placefunction:InvokeServer(nom, cat, orientation, target)
+	if not succes then
+		-- v56 : la raison du refus s'affiche sur l'etiquette du fantome (les toasts sont desactives) au lieu de la console seule
+		warn("Placement refuse : " .. tostring(raison))
+		if prixUI then prixUI.Price.Text = "Impossible : " .. tostring(raison); prixUI.Price.TextColor3 = Color3.fromRGB(247, 85, 0) end
+	else
+		diagnostic()
+		local infos = Catalogue.GetInfo(cat, nom)
+		if infos and infos.Unique then ClientBuild.DestroyPhantom() end      -- v56 : un objet unique ne se pose qu'une fois
+		ClientBuild.Pose:Fire(nom, cat, infos)
+	end
+	return succes, raison
+end
+
+local PlacePhantom
+local function BrancherPhantom()
+	ContextActionService:BindAction("Placer", PlacePhantom, false, Enum.UserInputType.MouseButton1)
+	ContextActionService:BindAction("Tourner", TurnPhantom, false, Enum.KeyCode.R)
+	RunService:BindToRenderStep("BouclePhantom", Enum.RenderPriority.Camera.Value, function()
+		if not phantom then return end
+
+		target = PositionPhantom(categorie)
+		if target then
+			phantom:PivotTo(target)
+			-- glisser : bouton enfonce et nouvelle case sous la souris -> on pose aussi la (pas en deplacement)
+			if enfonce and not deplacement then
+				local cle = cleCible(target)
+				if not tentes[cle] then
+					tentes[cle] = true
+					task.spawn(PoserIci)
+				end
+			end
+		end
+	end)
+end
+
+PlacePhantom = function(_, etat)
+	if etat == Enum.UserInputState.Begin then
+		if not (phantom and target) then return end
+		enfonce = true
+		table.clear(tentes)
+		tentes[cleCible(target)] = true
+		task.spawn(PoserIci)
+	elseif etat == Enum.UserInputState.End or etat == Enum.UserInputState.Cancel then
+		enfonce = false
+	end
+end
+
+-- boutons de l'interface (mobile / manette) : tourner et poser sans clavier ni clic au sol
+-- Renvoie l'orientation (0-3) et un texte a afficher. Pour un mur, "tourner" retourne la face avant.
+function ClientBuild.Tourner()
+	if categorie == "Acces" then return 0, "L'entrée et la sortie ne se tournent pas : glisse-les le long du bord" end
+	if categorie == "Furniture" and phantom then
+		local infos = Catalogue.GetInfo("Furniture", phantom.Name)
+		if infos and type(infos.OrientationFixe) == "number" then return orientation, "Les panneaux publicitaires font toujours face à la sortie du tunnel" end
+	end
+	if categorie == "Mur" then
+		retourner = not retourner
+		return orientation, retourner and "Mur retourné : face avant vers l'intérieur" or "Mur : face avant vers l'extérieur"
+	end
+	orientation = (orientation + 1) % 4
+	return orientation, "Rotation : " .. (orientation * 90) .. "°"
+end
+
+function ClientBuild.Poser()
+	if not (phantom and target) then return false, "aucun objet selectionne" end
+	return PoserIci()
+end
+
+function ClientBuild.EnDeplacement()
+	return deplacement ~= nil
+end
+
+function ClientBuild.EnPlacement()
+	return phantom ~= nil
+end
+
+function ClientBuild.CreatePhantom(name, cat)
+	
+	ClientBuild.DestroyLaser()
+	ClientBuild.DestroyPhantom()
+	
+	local dossier = ReplicatedStorage:WaitForChild(cat)
+	local item = dossier:FindFirstChild(name)
+	categorie = cat
+	
+	phantom = item:Clone()
+	-- un fantome n'est pas une station : pas de tag (sinon le systeme des stations l'animerait), marque "Apercu"
+	game:GetService("CollectionService"):RemoveTag(phantom, "Station")
+	phantom:SetAttribute("Apercu", true)
+	-- v54 : petit meuble de la demi-grille : meme etirement que le serveur, cadre redecoupe en 7,5
+	local infosDemi = Catalogue.GetInfo(cat, name)
+	demiEnCours = cat == "Furniture" and Demi.Est(infosDemi)
+	if demiEnCours then Demi.Ajuster(phantom, infosDemi) end
+	ClientBuild.GrilleDemi(demiEnCours)
+	for _, piece in phantom:GetDescendants() do
+		if piece:IsA("BasePart") then
+			piece.CanCollide = false
+			piece.CanQuery = false
+			piece.Anchored = true                      -- pieces mobiles des stations : rien ne doit bouger sur le fantome
+		end
+	end
+	phantom.Parent = workspace
+	
+	local infos = Catalogue.GetInfo(cat, name)
+	local prix = infos and infos.Prix or 0
+
+	prixUI = TemplatePrixUI:Clone()
+	prixUI.Adornee = phantom.PrimaryPart or phantom:FindFirstChildWhichIsA("BasePart")
+	prixUI.Parent = game.Players.LocalPlayer:WaitForChild("PlayerGui")
+	local assez = (ClientData.Data.Money or 0) >= prix
+	prixUI.Price.Text = "$ " .. prix
+	prixUI.Price.TextColor3 = assez and Color3.fromRGB(124, 255, 10) or Color3.fromRGB(247, 85, 0)
+	
+	BrancherPhantom()
+end
+
+-- v51 : ramasse l'entree ou la sortie du plot (modele AccesEntree / AccesSortie du PlotSpawn) : fantome translucide qui
+-- glisse le long de son bord ; clic / Place = AccesFunction(quoi, index) ; Echap / Annuler = rien ne bouge
+function ClientBuild.RamasserAcces(objet)
+	if not AccesFunction then return false end
+	local quoi = objet:GetAttribute("Acces")
+	if quoi ~= "Entree" and quoi ~= "Sortie" then return false end
+	ClientBuild.DestroyLaser()
+	ClientBuild.DestroyPhantom()
+	categorie = "Acces"
+	objet.Archivable = true
+	phantom = objet:Clone()
+	phantom:SetAttribute("Apercu", true)
+	for _, piece in ipairs(phantom:GetDescendants()) do
+		if piece:IsA("BasePart") then piece.CanCollide = false; piece.CanQuery = false; piece.Anchored = true; piece.Transparency = 0.45 end
+	end
+	phantom.Parent = workspace
+	deplacement = objet
+	accesEnCours = {quoi = quoi, modele = objet, index = objet:GetAttribute("Index")}
+	for _, p in ipairs(objet:GetDescendants()) do
+		if p:IsA("BasePart") then p.LocalTransparencyModifier = 0.7; table.insert(deplacementPieces, p) end
+	end
+	prixUI = TemplatePrixUI:Clone()
+	prixUI.Adornee = phantom.PrimaryPart or phantom:FindFirstChildWhichIsA("BasePart")
+	prixUI.Parent = game.Players.LocalPlayer:WaitForChild("PlayerGui")
+	prixUI.Price.Text = (quoi == "Entree") and "Entrée : glisse le long de la branche, clique pour poser" or "Sortie : glisse le long de la route, clique pour poser"
+	prixUI.Price.TextColor3 = Color3.fromRGB(120, 200, 255)
+	BrancherPhantom()
+	return true
+end
+
+function ClientBuild.DestroyPhantom()
+	
+	RunService:UnbindFromRenderStep("BouclePhantom")
+	demiEnCours = false
+	ClientBuild.GrilleDemi(false)
+	ContextActionService:UnbindAction("Placer")
+	ContextActionService:UnbindAction("Tourner")
+	enfonce = false
+
+	if phantom then
+		phantom:Destroy()
+		phantom = nil
+	end
+	if prixUI then prixUI:Destroy(); prixUI = nil end
+	-- objet en cours de deplacement : on le rend a nouveau opaque (il n'a pas bouge si la pose a ete annulee)
+	for _, p in ipairs(deplacementPieces) do
+		if p.Parent then p.LocalTransparencyModifier = 0 end
+	end
+	table.clear(deplacementPieces)
+	deplacement = nil
+	accesEnCours = nil
+	if categorie == "Acces" then categorie = nil end
+end
+
+-- ======================================================================================================================
+-- DEPLACEMENT D'UN OBJET DEJA POSE : dans l'onglet Construction, sans objet selectionne, survoler un objet du plot le
+-- surligne en bleu ; cliquer le ramasse (fantome de son modele, orientation conservee, original translucide) ; on le
+-- repose comme un objet neuf (clic / Place / R), sans rien payer. Echap / Annuler le remet a sa place.
+-- ======================================================================================================================
+local surlignage = nil
+local survole = nil
+
+local function Ramasser(objet)
+	local catAttr = objet:GetAttribute("Categorie")
+	if catAttr == "Acces" then return ClientBuild.RamasserAcces(objet) end
+	local cat = (catAttr == "MurNord" or catAttr == "MurOuest") and "Mur" or catAttr
+	local nom = objet:GetAttribute("Name") or objet.Name
+	if not cat or not ReplicatedStorage:FindFirstChild(cat) or not ReplicatedStorage[cat]:FindFirstChild(nom) then return false end
+	ClientBuild.CreatePhantom(nom, cat)
+	deplacement = objet
+	orientation = objet:GetAttribute("Orientation") or 0
+	if cat == "Mur" then retourner = (orientation == 2 or orientation == 3) end
+	for _, p in ipairs(objet:GetDescendants()) do
+		if p:IsA("BasePart") then p.LocalTransparencyModifier = 0.7; table.insert(deplacementPieces, p) end
+	end
+	if prixUI then prixUI.Price.Text = "Déplacement"; prixUI.Price.TextColor3 = Color3.fromRGB(120, 200, 255) end
+	return true
+end
+
+local function ClicDeplacer(_, etat)
+	if etat ~= Enum.UserInputState.Begin then return Enum.ContextActionResult.Pass end
+	if phantom or laser then return Enum.ContextActionResult.Pass end
+	if survole and Ramasser(survole) then return Enum.ContextActionResult.Sink end
+	return Enum.ContextActionResult.Pass
+end
+
+function ClientBuild.ActiverDeplacement()
+	ClientBuild.DesactiverDeplacement()
+	surlignage = Instance.new("Highlight")
+	surlignage.FillColor = Color3.fromRGB(80, 170, 255)
+	surlignage.OutlineColor = Color3.fromRGB(255, 255, 255)
+	surlignage.FillTransparency = 0.6
+	surlignage.Parent = nil
+	ContextActionService:BindAction("Deplacer", ClicDeplacer, false, Enum.UserInputType.MouseButton1)
+	RunService:BindToRenderStep("BoucleDeplacement", Enum.RenderPriority.Camera.Value, function()
+		if not surlignage then return end
+		if phantom or laser then
+			if survole then survole = nil; surlignage.Parent = nil end
+			return
+		end
+		local camera = workspace.CurrentCamera
+		local positionsouris = UserInputService:GetMouseLocation()
+		local ray = camera:ViewportPointToRay(positionsouris.X, positionsouris.Y)
+		local resultat = workspace:Raycast(ray.Origin, ray.Direction * 250)
+		local modele = resultat and resultat.Instance and resultat.Instance:FindFirstAncestorOfClass("Model")
+		local cat = modele and modele:GetAttribute("Categorie")
+		if modele and cat and (modele:IsDescendantOf(Folder) or (cat == "Acces" and plotcenter.Parent and modele:IsDescendantOf(plotcenter.Parent))) then
+			if survole ~= modele then survole = modele; surlignage.Parent = modele end
+		elseif survole then
+			survole = nil; surlignage.Parent = nil
+		end
+	end)
+end
+
+function ClientBuild.DesactiverDeplacement()
+	ContextActionService:UnbindAction("Deplacer")
+	RunService:UnbindFromRenderStep("BoucleDeplacement")
+	if surlignage then surlignage:Destroy(); surlignage = nil end
+	survole = nil
+end
+
+-- ======================================================================================================================
+-- GESTION DU LASER
+-- ======================================================================================================================
+
+local function DeleteTarget(actionName, state, input)
+	if state == Enum.UserInputState.Begin and object then
+		local succes = Destroyfunction:InvokeServer(object)
+		if succes then diagnostic() end
+
+		if succes and laser then
+			laser.Parent = nil
+			object = nil
+		end
+	end
+end
+
+function ClientBuild.CreateLaser()
+	
+	ClientBuild.DestroyLaser()
+	ClientBuild.DestroyPhantom()
+
+	laser = Instance.new("Highlight")
+	laser.FillColor = Color3.fromRGB(255, 0, 0)
+	laser.OutlineColor = Color3.fromRGB(255, 255, 255)
+	laser.FillTransparency = 0.5
+	laser.Parent = nil
+
+	ContextActionService:BindAction("Supprimer", DeleteTarget, false, Enum.UserInputType.MouseButton1)
+
+	RunService:BindToRenderStep("BoucleLaser", Enum.RenderPriority.Camera.Value, function()
+		if not laser then return end
+
+		local camera = workspace.CurrentCamera
+		local positionsouris = UserInputService:GetMouseLocation()
+		local ray = camera:ViewportPointToRay(positionsouris.X, positionsouris.Y)
+
+		local resultat = workspace:Raycast(ray.Origin, ray.Direction * 250)
+
+		if resultat and resultat.Instance then
+			local modeleTouche = resultat.Instance:FindFirstAncestorOfClass("Model")
+
+			if modeleTouche and modeleTouche:GetAttribute("Categorie") and modeleTouche:GetAttribute("Categorie") ~= "Acces" then
+				if object ~= modeleTouche then
+					object = modeleTouche
+					laser.Parent = object
+				end
+				return
+			end
+		end
+
+		if object then
+			laser.Parent = nil
+			object = nil
+		end
+	end)
+end
+
+function ClientBuild.DestroyLaser()
+	ContextActionService:UnbindAction("Supprimer")
+	RunService:UnbindFromRenderStep("BoucleLaser")
+
+	if laser then
+		laser:Destroy()
+		laser = nil
+	end
+
+	object = nil
+end
+
+-- ======================================================================================================================
+-- GESTION DES EXTENSIONS : zones achetables = carres verts au sol (contour), halo vert au survol, clic = panneau d'achat
+-- ======================================================================================================================
+
+local murs = {}
+local VERT = Color3.fromRGB(80, 255, 120)
+local HAUTEUR_TRAITS = 0.8            -- juste au-dessus du sol (dessus des dalles a +0,75 depuis la v48)
+
+-- piece plate locale (jamais envoyee au serveur) ; query = vrai si la souris doit pouvoir la viser
+local function plaque(nom, cf, taille, couleur, transparence, neon, query, liste)
+	local p = Instance.new("Part")
+	p.Name = nom
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanQuery = query or false
+	p.CanTouch = false
+	p.CastShadow = false
+	p.Material = neon and Enum.Material.Neon or Enum.Material.SmoothPlastic
+	p.Color = couleur
+	p.Transparency = transparence
+	p.Size = taille
+	p.CFrame = cf
+	p.Parent = workspace
+	table.insert(liste, p)
+	return p
+end
+
+-- contour d'un rectangle (coordonnees dans le repere du plot : x de x0 a x1, z de z0 a z1)
+local function contour(x0, x1, z0, z1, epaisseur, couleur, transparence, neon, liste, hauteur)
+	local base = plotcenter:GetPivot()
+	local h = hauteur or HAUTEUR_TRAITS
+	local e = epaisseur
+	plaque("Trait", base * CFrame.new((x0 + x1) / 2, h, z0), Vector3.new(x1 - x0 + e, 0.05, e), couleur, transparence, neon, false, liste)
+	plaque("Trait", base * CFrame.new((x0 + x1) / 2, h, z1), Vector3.new(x1 - x0 + e, 0.05, e), couleur, transparence, neon, false, liste)
+	plaque("Trait", base * CFrame.new(x0, h, (z0 + z1) / 2), Vector3.new(e, 0.05, z1 - z0 + e), couleur, transparence, neon, false, liste)
+	plaque("Trait", base * CFrame.new(x1, h, (z0 + z1) / 2), Vector3.new(e, 0.05, z1 - z0 + e), couleur, transparence, neon, false, liste)
+end
+
+-- zone achetable : contour vert, halo au survol de la souris, clic -> panneau Acheter / Annuler
+local function CreateBuyZone(x0, x1, z0, z1, prix, axis)
+	local base = plotcenter:GetPivot()
+	local cx, cz = (x0 + x1) / 2, (z0 + z1) / 2
+	local lx, lz = x1 - x0, z1 - z0
+	contour(x0, x1, z0, z1, 0.5, VERT, 0.1, true, murs)
+
+	-- surface cliquable (invisible au repos) + halo (surface verte qui depasse un peu, visible au survol)
+	local zone = plaque("ZoneExtension", base * CFrame.new(cx, HAUTEUR_TRAITS, cz), Vector3.new(lx, 0.1, lz), VERT, 1, true, true, murs)
+	local halo = plaque("HaloExtension", base * CFrame.new(cx, HAUTEUR_TRAITS - 0.02, cz), Vector3.new(lx + 4, 0.05, lz + 4), VERT, 1, true, false, murs)
+
+	local click = Instance.new("ClickDetector")
+	click.MaxActivationDistance = 300
+	click.Parent = zone
+
+	local TemplateUI = ReplicatedStorage:WaitForChild("TemplateExtensionUI")
+	local billboard = TemplateUI:Clone()
+	billboard.Adornee = zone
+	billboard.Enabled = false
+	billboard.Parent = game.Players.LocalPlayer:WaitForChild("PlayerGui")
+	billboard.Frame.Price.Text = `$ {prix}`
+	table.insert(murs, billboard)
+
+	click.MouseHoverEnter:Connect(function()
+		zone.Transparency = 0.55
+		halo.Transparency = 0.8
+	end)
+	click.MouseHoverLeave:Connect(function()
+		zone.Transparency = 1
+		halo.Transparency = 1
+	end)
+	click.MouseClick:Connect(function()
+		billboard.Enabled = true
+	end)
+
+	billboard.Frame.Cancel.MouseButton1Click:Connect(function()
+		billboard.Enabled = false
+	end)
+	billboard.Frame.Buy.MouseButton1Click:Connect(function()
+		local succes = Extensionfunction:InvokeServer(axis)
+		if succes then
+			billboard.Enabled = false
+			ClientBuild.CreateExtension()
+		end
+	end)
+end
+
+-- ======================================================================================================================
+-- QUADRILLAGE AU SOL : traits noirs fins sur les bords des cases de 10 x 10 studs, pendant la construction
+-- ======================================================================================================================
+
+local grille = {}
+local grilleDemi = {}             -- v54 : traits de la demi-grille (pendant la pose d'un petit meuble)
+local NOIR = Color3.fromRGB(20, 20, 20)
+
+function ClientBuild.DestroyGrille()
+	for _, p in ipairs(grille) do p:Destroy() end
+	table.clear(grille)
+	for _, p in ipairs(grilleDemi) do p:Destroy() end
+	table.clear(grilleDemi)
+end
+
+-- v54 : cadre redecoupe en demi-cases (7,5) pendant la pose d'un petit meuble / d'une deco : traits plus fins et plus clairs
+function ClientBuild.GrilleDemi(oui)
+	for _, p in ipairs(grilleDemi) do p:Destroy() end
+	table.clear(grilleDemi)
+	if not oui or #grille == 0 or not plotcenter then return end
+	local currentX, currentZ = ClientData.GetPlotSize()
+	local base = plotcenter:GetPivot()
+	local x0, x1 = 0, currentX * CASE
+	local z0, z1 = -DEMI, currentZ * CASE - DEMI
+	local e = 0.09
+	local GRIS = Color3.fromRGB(70, 70, 80)
+	for i = 0, currentX - 1 do
+		plaque("GrilleDemi", base * CFrame.new(i * CASE + DEMI, HAUTEUR_TRAITS, (z0 + z1) / 2), Vector3.new(e, 0.05, z1 - z0 + e), GRIS, 0.35, false, false, grilleDemi)
+	end
+	for j = 0, currentZ - 1 do
+		plaque("GrilleDemi", base * CFrame.new((x0 + x1) / 2, HAUTEUR_TRAITS, z0 + j * CASE + DEMI), Vector3.new(x1 - x0 + e, 0.05, e), GRIS, 0.35, false, false, grilleDemi)
+	end
+	local d = DecalageAnnexe()
+	if d then
+		local ax0, ax1 = d.X, d.X + ANNEXE_NX * CASE
+		local az0, az1 = d.Z - DEMI, d.Z - DEMI + ANNEXE_NZ * CASE
+		for i = 0, ANNEXE_NX - 1 do
+			plaque("GrilleDemi", base * CFrame.new(ax0 + i * CASE + DEMI, HAUTEUR_TRAITS, (az0 + az1) / 2), Vector3.new(e, 0.05, az1 - az0 + e), GRIS, 0.35, false, false, grilleDemi)
+		end
+		for j = 0, ANNEXE_NZ - 1 do
+			plaque("GrilleDemi", base * CFrame.new((ax0 + ax1) / 2, HAUTEUR_TRAITS, az0 + j * CASE + DEMI), Vector3.new(ax1 - ax0 + e, 0.05, e), GRIS, 0.35, false, false, grilleDemi)
+		end
+	end
+end
+
+-- les cases du plot : x de 0 a currentX*10, z de -5 a currentZ*10-5 (voir PositionPhantom)
+function ClientBuild.CreateGrille()
+	ClientBuild.DestroyGrille()
+	local currentX, currentZ = ClientData.GetPlotSize()
+	local base = plotcenter:GetPivot()
+	local x0, x1 = 0, currentX * CASE
+	local z0, z1 = -DEMI, currentZ * CASE - DEMI
+	local e = 0.15
+	for i = 0, currentX do
+		plaque("Grille", base * CFrame.new(i * CASE, HAUTEUR_TRAITS, (z0 + z1) / 2), Vector3.new(e, 0.05, z1 - z0 + e), NOIR, 0.15, false, false, grille)
+	end
+	for j = 0, currentZ do
+		plaque("Grille", base * CFrame.new((x0 + x1) / 2, HAUTEUR_TRAITS, z0 + j * CASE), Vector3.new(x1 - x0 + e, 0.05, e), NOIR, 0.15, false, false, grille)
+	end
+	-- v49 : cases interdites (la courbe de la route mord le coin du plot) : plaque sombre, pas de construction possible
+	local sv = plotcenter.Parent and plotcenter.Parent:FindFirstChild("CasesInterdites")
+	if sv and sv:IsA("StringValue") then
+		for cx, cz in string.gmatch(sv.Value, "(%d+),(%d+)") do
+			local x, z = tonumber(cx), tonumber(cz)
+			if x <= currentX and z <= currentZ then
+				plaque("CaseInterdite", base * CFrame.new((x - 0.5) * CASE, HAUTEUR_TRAITS - 0.01, (z - 1) * CASE), Vector3.new(CASE - 0.6, 0.04, CASE - 0.6), Color3.fromRGB(120, 40, 40), 0.55, false, false, grille)
+			end
+		end
+	end
+	-- annexe 2 x 2 en face de la route : meme quadrillage + contour bleu
+	local d = DecalageAnnexe()
+	if d then
+		local ax0, ax1 = d.X, d.X + ANNEXE_NX * CASE
+		local az0, az1 = d.Z - DEMI, d.Z - DEMI + ANNEXE_NZ * CASE
+		for i = 0, ANNEXE_NX do
+			plaque("Grille", base * CFrame.new(ax0 + i * CASE, HAUTEUR_TRAITS, (az0 + az1) / 2), Vector3.new(e, 0.05, az1 - az0 + e), NOIR, 0.15, false, false, grille)
+		end
+		for j = 0, ANNEXE_NZ do
+			plaque("Grille", base * CFrame.new((ax0 + ax1) / 2, HAUTEUR_TRAITS, az0 + j * CASE), Vector3.new(ax1 - ax0 + e, 0.05, e), NOIR, 0.15, false, false, grille)
+		end
+		contour(ax0, ax1, az0, az1, 0.5, Color3.fromRGB(70, 160, 255), 0.1, true, grille)
+	end
+end
+
+function ClientBuild.DestroyExtension()
+	for _, mur in ipairs(murs) do
+		if mur then
+			mur:Destroy()
+		end
+	end
+	table.clear(murs)
+	ClientBuild.DestroyGrille()
+end
+
+-- extensions : "droit" ajoute 3 rangees au bout du plot (z), "haut" ajoute 2 colonnes sur le cote (x)
+function ClientBuild.CreateExtension()
+	ClientBuild.DestroyExtension()
+	ClientBuild.CreateGrille()
+
+	local currentX, currentZ = ClientData.GetPlotSize()
+	local nextX, nextZ = ClientData.GetNextExtensions()
+
+	if nextZ then
+		local infosZ = Catalogue.GetInfo("Extension", nextZ)
+		local ajout = (infosZ and infosZ.AddZ) or 3
+		CreateBuyZone(0, currentX * CASE, currentZ * CASE - DEMI, (currentZ + ajout) * CASE - DEMI, infosZ and infosZ.Prix or 0, "Z")
+	end
+
+	if nextX then
+		local infosX = Catalogue.GetInfo("Extension", nextX)
+		local ajout = (infosX and infosX.AddX) or 2
+		CreateBuyZone(currentX * CASE, (currentX + ajout) * CASE, -DEMI, currentZ * CASE - DEMI, infosX and infosX.Prix or 0, "X")
+	end
+end
+
+return ClientBuild

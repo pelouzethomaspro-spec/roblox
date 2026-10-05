@@ -1,0 +1,206 @@
+local Players = game:GetService("Players")
+local ServerScriptService = game:GetService("ServerScriptService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local ProfileService = require(ServerScriptService:WaitForChild("ProfileService"))
+local PlotManager = require(ServerScriptService:WaitForChild("PlotManager"))
+local PlayerData = require(ServerScriptService:WaitForChild("PlayerData"))
+local CarManager = require(ServerScriptService:WaitForChild("CarManager"))
+local WorkerManager = require(ServerScriptService:WaitForChild("WorkerManager"))
+local Livraison = require(ServerScriptService:WaitForChild("Livraison"))
+do  -- v55 : modules optionnels ; v56 : une erreur de chargement est signalee dans la console au lieu d'etre avalee
+	local okD, eD = pcall(function() require(ServerScriptService:WaitForChild("Diagnostic", 10)) end)      -- modes Circulation / Decoration
+	if not okD then warn("[Data] Diagnostic : " .. tostring(eD)) end
+	local okM, eM = pcall(function() require(ServerScriptService:WaitForChild("Monetisation", 10)) end)    -- ProcessReceipt (produits Robux)
+	if not okM then warn("[Data] Monetisation : " .. tostring(eM)) end
+end
+local Notes = require(ServerScriptService:WaitForChild("Notes"))                        -- v56 : notes de la station (Ma station)
+
+local InitialData = ReplicatedStorage:WaitForChild("InitialData")
+local ChoosePlotfunction = ReplicatedStorage:WaitForChild("ChoosePlotfunction")
+
+
+local ProfileTemplate = {
+	Tutoriel = false,   -- v53 : tutoriel d'ItsCirly joue (premiere partie)
+	Money = 3000,       -- argent de depart (voir ECONOMIE.md) : sol ~150 + Lavage L1 600 + Caisse tapis 800 + Pile de cartons 200 + ~20 produits 200 = ~1950, marge ~1000 pour les salaires des premieres minutes (12 + 7 $/min) et le premier reassort
+	Xp = 0,
+	Extensions = {
+		droit1 = false,
+		droit2 = false,
+		droit3 = false,
+		haut1 = false,
+		haut2 = false,
+		haut3 = false
+	},
+	Inventory = {},
+	Livraisons = {},    -- consommables payes, en route dans le camion de livraison (voir Livraison)
+	Stations = {},
+	Caisses = {},
+	Garage = { Garage = {} },   -- le garage de l'atelier (livraisons) : Worker = id du logisticien affecte
+	Workers = {},
+	Index = {
+		Common = {},
+		Uncommon = {},
+		Rare = {},
+		Epic = {},
+		Legendary = {},
+		Mythic = {},
+		Divine = {}
+	},
+	Grid = nil
+}
+
+local ProfileStore = ProfileService.GetProfileStore("TycoonData_Prod_V38", ProfileTemplate)   -- V38 : nouveaux sols, murs et toits (pack PACK_10_3), orientation memorisee dans la grille
+
+local Profiles = {}
+
+-- ======================================================================================================================
+-- SAUVEGARDE
+-- ======================================================================================================================
+
+local function SyncGrid(player)
+	local profile = Profiles[player]
+	if not profile then return end
+
+	local grid = PlayerData.GetGrid(player)
+	if grid then
+		profile.Data.Grid = grid
+	end
+end
+
+-- ======================================================================================================================
+-- ARRIVÉE D'UN JOUEUR
+-- ======================================================================================================================
+
+-- v55 : le badge de rang (ClientRang : pseudo + rang en couleur) remplace le nom Roblox au-dessus de la tete
+local function masquerNom(character)
+	local h = character:WaitForChild("Humanoid", 10)
+	if h then h.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None end
+end
+
+local function PlayerAdded(player)
+	player.CharacterAdded:Connect(masquerNom)
+	if player.Character then task.spawn(masquerNom, player.Character) end
+
+	local profile = ProfileStore:LoadProfileAsync("Player_" .. player.UserId)
+
+	if profile == nil then
+		player:Kick("Erreur de chargement des données. Réessaie dans un instant.")
+		return
+	end
+
+	profile:AddUserId(player.UserId)
+	profile:Reconcile()           -- v56 : complete un ancien profil avec les champs ajoutes au modele (Index par rarete, Tutoriel...)
+
+	-- Se déclenche si le profil est réclamé par un autre serveur.
+	profile:ListenToRelease(function()
+		Profiles[player] = nil
+		player:Kick("Ton profil a été chargé sur un autre serveur. Reconnecte-toi.")
+	end)
+
+	if not player:IsDescendantOf(Players) then
+		profile:Release()
+		return
+	end
+
+	Profiles[player] = profile
+	PlayerData.Init(player, profile.Data)
+	-- apercu 3D du garage pour l'ecran-titre ("Ta partie"), construit hors de la map
+	task.spawn(function() local okA, errA = pcall(PlotManager.Apercu, player) if not okA then warn("[Data] apercu : " .. tostring(errA)) end end)
+
+	-- Les données sont prêtes : on les envoie au client
+	InitialData:FireClient(player, profile.Data)
+end
+
+-- ======================================================================================================================
+-- CHOIX DU PLOT
+-- ======================================================================================================================
+
+local function OnChoosePlot(player, spawnfolder)
+	-- 1. Le profil doit être chargé, sinon on n'a pas les données du joueur
+	if Profiles[player] == nil then return false end
+
+	-- 2. Réservation : toutes les vérifications de sécurité sont dans ClaimPlot
+	if not PlotManager.ClaimPlot(player, spawnfolder) then return false end
+
+	-- 2 bis. v51 : entree / sortie du plot (noeuds, tabliers) d'apres le profil, AVANT la construction (le terrain sous les
+	-- tabliers est fait par SpawnPlot)
+	local okA, errA = pcall(function() require(ServerScriptService:WaitForChild("Acces")).Appliquer(player, spawnfolder) end)
+	if not okA then warn("[Data] acces du plot : " .. tostring(errA)) end
+
+	-- 3. Construction du plot (SpawnPlot yield : il attend le personnage et fait un task.wait)
+	local plotSpawn, plotFolder = PlotManager.SpawnPlot(player)
+
+	-- 4. Le joueur a pu quitter le jeu pendant le yield de SpawnPlot
+	if not player:IsDescendantOf(Players) then return false end
+
+	-- 5. Tout est prêt, on lance les voitures et les employés
+	CarManager.Start(player, plotSpawn)
+	Livraison.Start(player, plotSpawn)            -- avant les employes : pose le poste du logisticien (attribut GaragePoste)
+	WorkerManager.Start(player, plotFolder)
+	Notes.Demarrer(player)                        -- v56 : notes Proprete / Rapidite / Accueil / Decoration
+
+	-- 6. v53 : premiere partie -> tutoriel (ItsCirly). Le profil garde Tutoriel = true ensuite ; /tutoriel le rejoue.
+	local profile = Profiles[player]
+	if profile and profile.Data and profile.Data.Tutoriel ~= true then
+		task.spawn(function()
+			local okT, errT = pcall(function()
+				require(ServerScriptService:WaitForChild("Tutoriel")).Lancer(player, plotSpawn, plotFolder)
+			end)
+			if not okT then warn("[Data] tutoriel : " .. tostring(errT)) end
+		end)
+	end
+	return true
+end
+
+-- ======================================================================================================================
+-- DÉPART D'UN JOUEUR
+-- ======================================================================================================================
+
+local function PlayerRemoving(player)
+	local profile = Profiles[player]
+	if profile == nil then return end
+
+	SyncGrid(player)
+	PlotManager.RemovePlot(player)
+	CarManager.Stop(player)
+	WorkerManager.Stop(player)
+	Notes.Arreter(player)
+	Livraison.Stop(player)
+
+	profile:Release()
+	Profiles[player] = nil
+	PlayerData.Remove(player)          -- (n'etait jamais appele : la memoire du joueur restait en vie apres son depart)
+end
+
+-- ======================================================================================================================
+-- BRANCHEMENTS
+-- ======================================================================================================================
+
+Players.PlayerAdded:Connect(PlayerAdded)
+Players.PlayerRemoving:Connect(PlayerRemoving)
+ChoosePlotfunction.OnServerInvoke = OnChoosePlot
+
+
+for _, player in ipairs(Players:GetPlayers()) do
+	task.spawn(PlayerAdded, player)
+end
+
+
+task.spawn(function()
+	while true do
+		task.wait(30)
+		for player in pairs(Profiles) do
+			SyncGrid(player)
+		end
+	end
+end)
+
+
+game:BindToClose(function()
+	for player, profile in pairs(Profiles) do
+		SyncGrid(player)
+		profile:Release()
+	end
+	task.wait(3)
+end)
