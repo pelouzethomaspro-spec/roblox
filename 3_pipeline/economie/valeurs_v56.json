@@ -1,0 +1,32 @@
+{
+  "rangs": [
+    {"Nom":"Bronze",  "Xp":0,       "Spawn":18.0, "Requis":{}, "Probas":[0.700,0.250,0.0450,0.0050,0,0,0]},
+    {"Nom":"Argent",  "Xp":4000,    "Spawn":15.0, "Requis":{"Common":20,"Uncommon":8,"Rare":1}, "Probas":[0.550,0.300,0.1200,0.0280,0.0020,0,0]},
+    {"Nom":"Or",      "Xp":20000,   "Spawn":12.5, "Requis":{"Common":80,"Uncommon":40,"Rare":15,"Epic":2}, "Probas":[0.420,0.320,0.1900,0.0600,0.0090,0.001,0]},
+    {"Nom":"Platine", "Xp":80000,   "Spawn":10.0, "Requis":{"Common":250,"Uncommon":150,"Rare":80,"Epic":20,"Legendary":1}, "Probas":[0.300,0.310,0.2600,0.1050,0.0220,0.003,0]},
+    {"Nom":"Diamant", "Xp":300000,  "Spawn":8.5,  "Requis":{"Common":600,"Uncommon":450,"Rare":300,"Epic":100,"Legendary":10}, "Probas":[0.200,0.270,0.3200,0.1650,0.0380,0.0068,0.0002]},
+    {"Nom":"Maitre",  "Xp":1200000, "Spawn":7.0,  "Requis":{"Rare":1000,"Epic":500,"Legendary":50,"Mythic":4}, "Probas":[0.130,0.220,0.3400,0.2300,0.0700,0.0094,0.0006]},
+    {"Nom":"Legende", "Xp":5000000, "Spawn":6.0,  "Requis":{"Epic":2500,"Legendary":250,"Mythic":20,"Divine":2}, "Probas":[0.080,0.170,0.3300,0.2900,0.1100,0.0185,0.0015]}
+  ],
+  "stations": {
+    "L1_Vide":     {"Prix":600,  "Cycle":19.0,  "Net":20,  "Mult":1.0, "Auto":false},
+    "L2_Seaux":    {"Prix":900,  "Cycle":19.0,  "Net":20,  "Mult":1.2, "Auto":false},
+    "L3_Karcher":  {"Prix":2500, "Cycle":34.7,  "Net":20,  "Mult":1.5, "Auto":true},
+    "L4_Rouleaux": {"Prix":4000, "Cycle":36.2,  "Net":20,  "Mult":1.8, "Auto":true},
+    "E1_Base":     {"Prix":800,  "Cycle":19.0,  "Net":25,  "Mult":1.0, "Auto":false},
+    "E2_Barils":   {"Prix":1200, "Cycle":19.0,  "Net":25,  "Mult":1.2, "Auto":false},
+    "E3_Pompes":   {"Prix":2000, "Cycle":19.0,  "Net":30,  "Mult":1.4, "Auto":false},
+    "E4_Bornes":   {"Prix":3500, "Cycle":43.0,  "Net":30,  "Mult":1.8, "Auto":true},
+    "E5_Pneus":    {"Prix":5000, "Cycle":45.2,  "Net":100, "Mult":1.5, "Auto":true},
+    "E6_Peinture": {"Prix":8000, "Cycle":69.27, "Net":55,  "Mult":2.0, "Auto":true},
+    "E7_Teinte":   {"Prix":6000, "Cycle":30.5,  "Net":45,  "Mult":1.6, "Auto":true}
+  },
+  "XP_PAR_VOITURE": 50,
+  "SALAIRE_ATTENDANT": 12, "SALAIRE_CAISSIER": 7, "SALAIRE_LOGISTICIEN": 10, "SALAIRE_ENTRETIEN": 8,
+  "PRIX_EMBAUCHE": 300,
+  "ARGENT_DEPART": 3000,
+  "POURBOIRE_MIN": 0.85, "POURBOIRE_MAX": 1.30,
+  "NOTE_CADENCE_MIN": 0.90, "NOTE_CADENCE_MAX": 1.15,
+  "ATTRACTIVITE_PAR_STATION": 0.10, "ATTRACTIVITE_MAX": 1.8,
+  "PUB_MAX": 2.0, "DECO_MAX": 1.5
+}

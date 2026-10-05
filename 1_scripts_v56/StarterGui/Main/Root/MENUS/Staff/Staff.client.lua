@@ -1,0 +1,1 @@
+-- Template des rangées du personnel (cloné par UIController)

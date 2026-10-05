@@ -1,0 +1,126 @@
+--[[ Demi (ModuleScript, ReplicatedStorage) — v54 : DEMI-GRILLE DE 7,5 STUDS pour les petits meubles et la deco.
+	Les stations restent sur la grille de 15 (3 x 3 cases, pivot au centre). Les autres meubles du catalogue Furniture
+	(caisses, cartons, rayonnages, plantes, barrieres...) portent `Demi = true` et leur Masque est exprime en DEMI-CASES :
+	la caisse fait 3 x 1 demi-cases (22,5 x 7,5) au lieu de 2 x 1 cases (30 x 15).
+	Partage par le serveur (PlotManager) et le client (ClientBuild) : memes formules de position et meme mise a l'echelle
+	du modele (le modele d'origine, dessine pour des cases de 15, est etire separement en X et Z pour tenir dans son masque).
+
+	Repere du plot : la demi-case (hx, hz) est centree sur ((hx - 0,5) * 7,5, (hz - 0,5) * 7,5 - DEMI) ; elle appartient a la
+	case (ceil(hx / 2), ceil(hz / 2)). Cle de la demi-grille sauvegardee : "hx_hz" (dictionnaire : les cles entieres creuses
+	ne passent pas dans le DataStore).
+]]
+local Demi = {}
+
+Demi.CASE = 7.5
+local CASE, DEMI = 15, 7.5
+local H = Demi.CASE
+local REMPLISSAGE = 0.94           -- le modele occupe au plus 94 % de son masque (un petit jour entre deux meubles)
+
+function Demi.Est(infos)
+	return type(infos) == "table" and infos.Demi == true
+end
+
+function Demi.Cle(hx, hz) return hx .. "_" .. hz end
+
+-- demi-case contenant un point (repere du plot ou de la zone)
+function Demi.CaseDe(position)
+	return math.floor(position.X / H) + 1, math.floor((position.Z + DEMI) / H) + 1
+end
+-- centre (X, Z) d'une demi-case
+function Demi.Centre(hx, hz)
+	return (hx - 0.5) * H, (hz - 0.5) * H - DEMI
+end
+-- case de la grille de 15 contenant la demi-case
+function Demi.CaseMere(hx, hz)
+	return math.ceil(hx / 2), math.ceil(hz / 2)
+end
+-- les 4 demi-cases d'une case
+function Demi.DemiCasesDe(x, z)
+	return { {2 * x - 1, 2 * z - 1}, {2 * x, 2 * z - 1}, {2 * x - 1, 2 * z}, {2 * x, 2 * z} }
+end
+-- une case de 15 est-elle (partiellement) occupee par un meuble de la demi-grille ? renvoie le FurnitureID trouve
+function Demi.Occupe(demi, x, z)
+	if not demi then return nil end
+	for _, h in ipairs(Demi.DemiCasesDe(x, z)) do
+		local c = demi[Demi.Cle(h[1], h[2])]
+		if c then return c.FurnitureID or true end
+	end
+	return nil
+end
+
+-- rotation d'un masque (comme PlotManager.TurnTab : sens horaire)
+function Demi.Tourner(masque)
+	local lignes, colonnes = #masque, #masque[1]
+	local nouveau = {}
+	for x = 1, colonnes do
+		nouveau[x] = {}
+		for z = 1, lignes do nouveau[x][z] = masque[lignes - z + 1][x] end
+	end
+	return nouveau
+end
+-- masque tourne et ancre (a, b) pour une orientation (meme convention que PlotManager.Place : pivot au coin)
+function Demi.MasqueOriente(masque, orientation)
+	local hauteur, largeur = #masque, #masque[1]
+	local m = masque
+	for _ = 1, (4 - orientation) % 4 do m = Demi.Tourner(m) end
+	local a, b = 1, 1
+	if orientation == 1 then a = 1; b = largeur
+	elseif orientation == 2 then a = largeur; b = hauteur
+	elseif orientation == 3 then a = hauteur; b = 1 end
+	return m, a, b
+end
+-- demi-cases occupees par un meuble ancre en (hx, hz) : liste de {hx, hz, ancre = bool}
+function Demi.Cases(masque, orientation, hx, hz)
+	local m, a, b = Demi.MasqueOriente(masque, orientation)
+	local liste = {}
+	for z = 1, #m do
+		for x = 1, #m[z] do
+			if m[z][x] == 1 then table.insert(liste, { hx + (x - a), hz + (z - b), ancre = (x == a and z == b) }) end
+		end
+	end
+	return liste, #m[1], #m
+end
+
+-- etire un modele (clone d'un modele dessine pour des cases de 15) pour qu'il tienne dans son masque de demi-cases,
+-- separement en X et en Z (repere du modele, orientation 0), Y a la moyenne des deux ; jamais agrandi.
+-- Les pieces alignees sur le repere du modele sont etirees ; les autres (tournees) gardent des proportions uniformes.
+function Demi.Ajuster(modele, infos)
+	if not (modele and Demi.Est(infos) and infos.Masque) then return modele end
+	local okB, cfB, taille = pcall(function() return modele:GetBoundingBox() end)
+	if not okB or not taille then return modele end
+	local pivot = modele:GetPivot()
+	-- dimensions de la boite dans le repere du modele
+	local rel = pivot:ToObjectSpace(cfB)
+	local ex = math.abs(rel.RightVector.X) * taille.X + math.abs(rel.UpVector.X) * taille.Y + math.abs(rel.LookVector.X) * taille.Z
+	local ez = math.abs(rel.RightVector.Z) * taille.X + math.abs(rel.UpVector.Z) * taille.Y + math.abs(rel.LookVector.Z) * taille.Z
+	local largeur, hauteur = #infos.Masque[1], #infos.Masque           -- en demi-cases (X, Z)
+	local fx = math.min(1, REMPLISSAGE * largeur * H / math.max(ex, 0.1))
+	local fz = math.min(1, REMPLISSAGE * hauteur * H / math.max(ez, 0.1))
+	local fy = (fx + fz) / 2
+	if fx > 0.999 and fz > 0.999 then return modele end
+	-- centre de la boite dans le plan : on etire autour du pivot pour X / Z et depuis le sol (bas de la boite) pour Y
+	local bas = pivot:PointToObjectSpace(cfB.Position).Y - taille.Y / 2
+	for _, p in ipairs(modele:GetDescendants()) do
+		if p:IsA("BasePart") then
+			local l = pivot:ToObjectSpace(p.CFrame)
+			local pos = l.Position
+			local np = Vector3.new(pos.X * fx, bas + (pos.Y - bas) * fy, pos.Z * fz)
+			-- taille : axes de la piece exprimes dans le repere du modele
+			local r, u, lk = l.RightVector, l.UpVector, l.LookVector
+			local function facteur(v)
+				local ax, ay, az = math.abs(v.X), math.abs(v.Y), math.abs(v.Z)
+				if ax > 0.95 then return fx elseif az > 0.95 then return fz elseif ay > 0.95 then return fy end
+				return math.min(fx, fz)                      -- piece tournee : proportions uniformes
+			end
+			local s = p.Size
+			local ns = Vector3.new(s.X * facteur(r), s.Y * facteur(u), s.Z * facteur(lk))
+			if p:IsA("MeshPart") or p:IsA("Part") or p:IsA("WedgePart") or p:IsA("CornerWedgePart") or p:IsA("UnionOperation") then
+				pcall(function() p.Size = ns end)
+			end
+			p.CFrame = pivot * CFrame.new(np) * (l - l.Position)
+		end
+	end
+	return modele
+end
+
+return Demi

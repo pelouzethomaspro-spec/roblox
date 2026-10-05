@@ -1,0 +1,232 @@
+--[[ Catalogue / Furniture
+	Meubles posables (categorie "Furniture" du menu de construction). La cle = nom du modele dans
+	ReplicatedStorage > Furniture (c'est ce nom que le client envoie au serveur, et que le serveur verifie ici).
+
+	Stations : le nom du modele est AUSSI le nom des donnees d'animation (ReplicatedStorage > Stations > Donnees).
+	Toutes les stations font 30 x 25 studs au sol : masque 3 x 3 cases (une case = 10 studs). La voiture entre par
+	le cote -Z du meuble (orientation 0) et ressort par +Z : laisse ces deux cotes degages.
+
+	Champs :
+		Prix       prix d'achat (rembourse integralement a la destruction)
+		Masque     cases occupees (lignes = z, colonnes = x), tournees selon l'orientation
+		Type       "Station" (une voiture y est servie) | "Caisse" (les clients payent) | nil (decor / stockage)
+		Accepted   consommables acceptes (cles de Catalogue > Consommable)
+		Capacity   volume max de consommable dans la station (litres)
+		Automatic  true = fonctionne sans employe
+		Stockage   volume d'inventaire ajoute au joueur (meubles de stockage)
+		Famille    groupe de la carte du menu de construction (barrieres, plantes, cartons, etagere)
+		Pivot      "centre" : le modele pivote autour de la case centrale du masque (stations) ; sinon coin d'ancrage
+		Demi       v54 : meuble de la DEMI-GRILLE (7,5 studs) : le Masque est en DEMI-CASES et le modele (dessine pour des
+		           cases de 15) est etire pour tenir dedans (ReplicatedStorage > Demi). Caisses, stockage et deco ; pas les stations.
+		Nom        libelle pour l'interface
+	Les prix / capacites des stations sont des valeurs de depart : ajuste-les librement, le code ne depend pas d'elles.
+]]
+local MASQUE_3x3 = {
+	{1, 1, 1},
+	{1, 1, 1},
+	{1, 1, 1},
+}
+
+local Furniture = {
+
+	-- ------------------------------------------------------------------ caisses
+	["1"] = {
+		Nom = "Caisse tapis",
+		Prix = 800,
+		Demi = true,
+		Masque = {                      -- 3 demi-cases de long (22,5) x 1 de large (7,5)
+			{1},
+			{1},
+			{1},
+		},
+		Type = "Caisse",
+		Automatic = false,
+	},
+	["2"] = {
+		Nom = "Caisse automatique",
+		Prix = 2000,
+		Demi = true,
+		Masque = {
+			{1},
+			{1},
+			{1},
+		},
+		Type = "Caisse",
+		Automatic = true,
+	},
+
+	-- ------------------------------------------------------------------ stockage
+	["3"] = {
+		Nom = "Pile de cartons",
+		Prix = 200,
+		Demi = true,
+		Masque = {
+			{1},
+		},
+		Stockage = 50,
+	},
+	["4"] = {
+		Nom = "Rayonnage",
+		Prix = 1000,
+		Demi = true,
+		Masque = {                      -- 2 x 4 demi-cases = 15 x 30 (inchange)
+			{1, 1},
+			{1, 1},
+			{1, 1},
+			{1, 1},
+		},
+		Stockage = 400,
+	},
+
+	-- ------------------------------------------------------------------ stations de lavage (consommables 1, 2, 3)
+	["L1_Vide"] = {
+		Nom = "Lavage : place libre",
+		Prix = 600,
+		Masque = MASQUE_3x3,
+		Pivot = "centre",             -- tourne sur place autour de sa case centrale
+		Type = "Station",
+		Accepted = {"1", "2", "3"},
+		Capacity = 50,
+		Automatic = false,
+	},
+	["L2_Seaux"] = {
+		Nom = "Lavage aux seaux",
+		Prix = 900,
+		Masque = MASQUE_3x3,
+		Pivot = "centre",             -- tourne sur place autour de sa case centrale
+		Type = "Station",
+		Accepted = {"1", "2", "3"},
+		Capacity = 80,
+		Automatic = false,
+	},
+	["L3_Karcher"] = {
+		Nom = "Karcher sur pont roulant",
+		Prix = 2500,
+		Masque = MASQUE_3x3,
+		Pivot = "centre",             -- tourne sur place autour de sa case centrale
+		Type = "Station",
+		Accepted = {"1"},
+		Capacity = 160,
+		Automatic = true,
+	},
+	["L4_Rouleaux"] = {
+		Nom = "Portique a rouleaux",
+		Prix = 4000,
+		Masque = MASQUE_3x3,
+		Pivot = "centre",             -- tourne sur place autour de sa case centrale
+		Type = "Station",
+		Accepted = {"1"},
+		Capacity = 300,
+		Automatic = true,
+	},
+
+	-- ------------------------------------------------------------------ stations d'entretien / energie (4, 5, 6) et ateliers (7, 8, 9)
+	["E1_Base"] = {
+		Nom = "Entretien de base",
+		Prix = 800,
+		Masque = MASQUE_3x3,
+		Pivot = "centre",             -- tourne sur place autour de sa case centrale
+		Type = "Station",
+		Accepted = {"1", "2", "3", "4", "5", "6"},
+		Capacity = 50,
+		Automatic = false,
+	},
+	["E2_Barils"] = {
+		Nom = "Barils et jerricans",
+		Prix = 1200,
+		Masque = MASQUE_3x3,
+		Pivot = "centre",             -- tourne sur place autour de sa case centrale
+		Type = "Station",
+		Accepted = {"4"},
+		Capacity = 100,
+		Automatic = false,
+	},
+	["E3_Pompes"] = {
+		Nom = "Pompes (essence, gaz, electrique)",
+		Prix = 2000,
+		Masque = MASQUE_3x3,
+		Pivot = "centre",             -- tourne sur place autour de sa case centrale
+		Type = "Station",
+		Accepted = {"4", "5", "6"},
+		Capacity = 200,
+		Automatic = false,
+	},
+	["E4_Bornes"] = {
+		Nom = "Bornes robotisees",
+		Prix = 3500,
+		Masque = MASQUE_3x3,
+		Pivot = "centre",             -- tourne sur place autour de sa case centrale
+		Type = "Station",
+		Accepted = {"4", "5", "6"},
+		Capacity = 300,
+		Automatic = true,
+	},
+	["E5_Pneus"] = {
+		Nom = "Changement de roues",
+		Prix = 5000,
+		Masque = MASQUE_3x3,
+		Pivot = "centre",             -- tourne sur place autour de sa case centrale
+		Type = "Station",
+		Accepted = {"7"},                -- jeu de pneus
+		Capacity = 120,
+		Automatic = true,
+	},
+	["E6_Peinture"] = {
+		Nom = "Cabine de peinture",
+		Prix = 8000,
+		Masque = MASQUE_3x3,
+		Pivot = "centre",             -- tourne sur place autour de sa case centrale
+		Type = "Station",
+		Accepted = {"8"},                -- pot de peinture
+		Capacity = 150,
+		Automatic = true,
+	},
+	["E7_Teinte"] = {
+		Nom = "Pose de film teinte",
+		Prix = 6000,
+		Masque = MASQUE_3x3,
+		Pivot = "centre",             -- tourne sur place autour de sa case centrale
+		Type = "Station",
+		Accepted = {"9"},                -- film teinte pour vitres
+		Capacity = 100,
+		Automatic = true,
+	},
+
+	-- ------------------------------------------------------------------ v55 : PANNEAUX PUBLICITAIRES (PANNEAUX_PUB_VIERGES_1.fbx)
+	-- Uniquement dans l'ANNEXE (carre bleu en face de la route), orientation imposee vers la sortie du tunnel (le serveur
+	-- force Orientation = 0, le modele est importe face +Z), pas de sol necessaire (SansSol), 1 exemplaire par taille
+	-- (Unique). Tailles en demi-cases (7,5) : 1 / 2 / 3 de large, 1 de profondeur ; les 9 occupent 16 demi-cases = toute
+	-- l'annexe (4 x 4). Clients = part de bonus de cadence des clients (somme = 1,00 -> deux fois plus de clients).
+	-- Rang = rang minimum (Catalogue/Rank) pour l'acheter.
+	["PUB_1_PANCARTE"] = { Nom = "Pancarte",  Prix = 500,   Famille = "pubs", Pub = true, Demi = true, Masque = {{1}},       SansSol = true, Annexe = true, Unique = true, OrientationFixe = 0, Clients = 0.04, Rang = "Bronze" },
+	["PUB_2_CHEVALET"] = { Nom = "Chevalet",  Prix = 900,   Famille = "pubs", Pub = true, Demi = true, Masque = {{1}},       SansSol = true, Annexe = true, Unique = true, OrientationFixe = 0, Clients = 0.05, Rang = "Bronze" },
+	["PUB_3_MONUMENT"] = { Nom = "Monument",  Prix = 1500,  Famille = "pubs", Pub = true, Demi = true, Masque = {{1}},       SansSol = true, Annexe = true, Unique = true, OrientationFixe = 0, Clients = 0.06, Rang = "Argent" },
+	["PUB_4_PORTIQUE"] = { Nom = "Portique",  Prix = 2500,  Famille = "pubs", Pub = true, Demi = true, Masque = {{1, 1}},    SansSol = true, Annexe = true, Unique = true, OrientationFixe = 0, Clients = 0.08, Rang = "Argent" },
+	["PUB_5_ENSEIGNE"] = { Nom = "Enseigne",  Prix = 4000,  Famille = "pubs", Pub = true, Demi = true, Masque = {{1, 1}},    SansSol = true, Annexe = true, Unique = true, OrientationFixe = 0, Clients = 0.10, Rang = "Or" },
+	["PUB_6_BIPODE"]   = { Nom = "Bipode",    Prix = 6000,  Famille = "pubs", Pub = true, Demi = true, Masque = {{1, 1}},    SansSol = true, Annexe = true, Unique = true, OrientationFixe = 0, Clients = 0.12, Rang = "Or" },
+	["PUB_7_TREILLIS"] = { Nom = "Treillis",  Prix = 9000,  Famille = "pubs", Pub = true, Demi = true, Masque = {{1, 1}},    SansSol = true, Annexe = true, Unique = true, OrientationFixe = 0, Clients = 0.14, Rang = "Platine" },
+	["PUB_8_MAT"]      = { Nom = "Mât",       Prix = 14000, Famille = "pubs", Pub = true, Demi = true, Masque = {{1, 1}},    SansSol = true, Annexe = true, Unique = true, OrientationFixe = 0, Clients = 0.17, Rang = "Diamant" },
+	["PUB_9_TOTEM"]    = { Nom = "Totem",     Prix = 25000, Famille = "pubs", Pub = true, Demi = true, Masque = {{1, 1, 1}}, SansSol = true, Annexe = true, Unique = true, OrientationFixe = 0, Clients = 0.24, Rang = "Maître" },
+
+	-- ------------------------------------------------------------------ decor (pack de constructions PACK_10_3)
+	["barriere_arceau"] = { Nom = "Barrière arceau", Prix = 25, Famille = "barrieres", Demi = true, Masque = {{1}} },
+	["barriere_grille"] = { Nom = "Barrière grille", Prix = 20, Famille = "barrieres", Demi = true, Masque = {{1}} },
+	["barriere_potelets"] = { Nom = "Potelets", Prix = 20, Famille = "barrieres", Demi = true, Masque = {{1}} },
+	["barriere_rails"] = { Nom = "Barrière rails", Prix = 20, Famille = "barrieres", Demi = true, Masque = {{1}} },
+	["barriere_verre"] = { Nom = "Barrière verre", Prix = 35, Famille = "barrieres", Demi = true, Masque = {{1}} },
+	["buisson_boule"] = { Nom = "Buisson boule", Prix = 15, Famille = "plantes", Demi = true, Masque = {{1}} },
+	["carton_grand"] = { Nom = "Grand carton", Prix = 60, Famille = "cartons", Demi = true, Masque = {{1}}, Stockage = 30 },
+	["carton_moyen"] = { Nom = "Carton moyen", Prix = 45, Famille = "cartons", Demi = true, Masque = {{1}}, Stockage = 20 },
+	["carton_petit"] = { Nom = "Petit carton", Prix = 30, Famille = "cartons", Demi = true, Masque = {{1}}, Stockage = 10 },
+	["colonne_taillee"] = { Nom = "Colonne taillée", Prix = 45, Famille = "plantes", Demi = true, Masque = {{1}} },
+	["haie_bloc"] = { Nom = "Haie", Prix = 20, Famille = "plantes", Demi = true, Masque = {{1}} },
+	["jardiniere_fleurs"] = { Nom = "Jardinière fleurie", Prix = 40, Famille = "plantes", Demi = true, Masque = {{1}} },
+	["jardiniere_longue"] = { Nom = "Jardinière longue", Prix = 45, Famille = "plantes", Demi = true, Masque = {{1}} },
+	["pot_buisson"] = { Nom = "Pot buisson", Prix = 25, Famille = "plantes", Demi = true, Masque = {{1}} },
+	["pot_cactus"] = { Nom = "Pot cactus", Prix = 25, Famille = "plantes", Demi = true, Masque = {{1}} },
+	["rayonnage_vide"] = { Nom = "Rayonnage vide", Prix = 600, Famille = "etagere", Demi = true, Masque = {{1, 1, 1, 1}, {1, 1, 1, 1}}, Stockage = 250 },
+	["topiaire_boule"] = { Nom = "Topiaire boule", Prix = 35, Famille = "plantes", Demi = true, Masque = {{1}} },
+	["topiaire_cone"] = { Nom = "Topiaire cône", Prix = 35, Famille = "plantes", Demi = true, Masque = {{1}} },
+}
+
+return Furniture
