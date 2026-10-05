@@ -499,41 +499,65 @@ Etapes.accueil = function(P)
 	bandes(true)
 	local gui = interface(); gui.Noir.BackgroundTransparency = 0
 	local spawn = P.spawn
-	-- v56 : ARRIVEE EN PICK-UP (si le modele F-150 est dans la place)
+	-- v56 : ARRIVEE EN PICK-UP (si le modele F-150 est dans la place). Plans : 1) trois-quarts vue de haut, on voit
+	-- ItsCirly dans la benne pendant que le pick-up prend de la vitesse ; 2) zoom sur lui, il se presente ; 3) dezoom avant le
+	-- freinage ; 4) plan exterieur bas pour le derapage et le coup de deux roues ; 5) face a la benne, gare.
 	local PK = P.pickup and P.pickup.points and creerPickup(P.pickup.modele) or nil
 	if PK then
 		S.pickup = PK
 		local pts = P.pickup.points
 		local lacher = dansLaBenne(PK, nil)
 		S.lacherToit = lacher
-		-- plan 1 : trois-quarts avant, assez bas, qui suit le pick-up dans la descente de la branche
-		local cote = 1
+		local positionCirly = function() local b = PK.benne; return (PK.cfCourant or pts[1].cf) * CFrame.new(PK.cir.x, b.y + 1.1, PK.cir.z) end
+		local plan = "haut"
+		local posFixe = nil
 		camSuivre(function()
 			local cf = PK.cfCourant or pts[1].cf
-			local pos = (cf * CFrame.new(cote * 12, 6, -24)).Position
-			return CFrame.lookAt(pos, cf.Position + Vector3.new(0, 3, 0))
+			if plan == "haut" then
+				camera.FieldOfView += (58 - camera.FieldOfView) * 0.08
+				return CFrame.lookAt((cf * CFrame.new(14, 22, 26)).Position, (cf * CFrame.new(0, 4, 2)).Position)
+			elseif plan == "zoom" then
+				camera.FieldOfView += (40 - camera.FieldOfView) * 0.06
+				local pc = positionCirly()
+				return CFrame.lookAt((pc * CFrame.new(7, 4.5, 9)).Position, pc.Position + Vector3.new(0, 1.5, 0))
+			elseif plan == "exterieur" then
+				camera.FieldOfView += (70 - camera.FieldOfView) * 0.1
+				return CFrame.lookAt(posFixe, cf.Position + Vector3.new(0, 3.5, 0))
+			end
+			return camera.CFrame
 		end)
-		camera.FieldOfView = 64
-		do local cf = pts[1].cf; camera.CFrame = CFrame.lookAt((cf * CFrame.new(12, 6, -24)).Position, cf.Position + Vector3.new(0, 3, 0)) end
+		do local cf = pts[1].cf; camera.CFrame = CFrame.lookAt((cf * CFrame.new(14, 22, 26)).Position, (cf * CFrame.new(0, 4, 2)).Position) end
 		fondu(false, 0.5)
+		-- dialogue pendant la descente (camera serree sur lui), puis dezoom avant le virage
+		task.spawn(function()
+			task.wait(1.4); if plan ~= "haut" then return end
+			plan = "zoom"
+			if P.rejouer then
+				dire("Re ! Nouveau pick-up, meme chauffeur. On refait le tour du proprietaire ?", "wave", 2.6)
+			else
+				dire("Hey ! Moi c'est ItsCirly. Bienvenue a STATION TYCOON !", "wave", 2.6)
+			end
+			if plan == "zoom" then dire("Je t'emmene voir TON terrain. Tiens-toi bien, mon chauffeur conduit... sportif.", "point", 2.6) end
+			if plan == "zoom" then plan = "haut"; animer("sit", true) end
+			montrerPanneau(false)
+		end)
 		roulerPickup(PK, pts,
-			function(coteVirage)
-				-- derapage : plan exterieur bas, large, qui regarde le pick-up se mettre sur deux roues
-				camera.FieldOfView = 72
-				local ancre = PK.cfCourant or pts[1].cf
-				local posCam = (ancre * CFrame.new((coteVirage or 1) * 20, 5, 4)).Position
-				camSuivre(function()
-					local cf = PK.cfCourant or ancre
-					return CFrame.lookAt(posCam, cf.Position + Vector3.new(0, 3.5, 0))
-				end)
-				task.spawn(dire, "WOOOOH !! Doucement, DOUCEMENT !", "cheer", 1.0)
+			function(ext)
+				-- debut de la glissade : plan exterieur bas, fixe, qui regarde le pick-up deraper puis se mettre sur deux roues
+				posFixe = ((PK.cfCourant or pts[1].cf) * CFrame.new(ext * 22, 5, 2)).Position
+				plan = "exterieur"
 			end,
 			function()
-				-- il retombe sur ses quatre roues : ItsCirly se rattrape et se rassoit
+				S.jeton += 1          -- coupe le dialogue en cours
+				animer("cheer", false)
+				task.spawn(dire, "WOOOOH !! Doucement, DOUCEMENT !", "cheer", 1.4)
+			end,
+			function()
 				animer("sit", true)
-				task.spawn(dire, "...Ouf. Ca va, ca va. Je gere.", "sit", 1.2)
+				task.spawn(dire, "...Ouf. Ca va, ca va. Je gere.", "sit", 1.4)
 			end)
 		-- gare : la camera vient se poser face a la benne, ItsCirly regarde le joueur
+		plan = "fini"
 		if S.lacherToit then S.lacherToit() end
 		S.lacherToit = dansLaBenne(PK, P.pickup.versJoueur or spawn.Position)
 		local park = P.pickup.parking or PK.cfCourant
@@ -543,11 +567,6 @@ Etapes.accueil = function(P)
 		camVers(CFrame.lookAt(posCam, park.Position + Vector3.new(0, 4.5, 0)), 0.9)
 		camSuivre(function() return CFrame.lookAt(posCam, positionGuide() + Vector3.new(0, 1.2, 0)) end)
 		montrerPanneau(true)
-		if P.rejouer then
-			dire("Re ! Nouveau pick-up, meme chauffeur. On refait le tour du proprietaire ?", "wave", 1.8)
-		else
-			dire("Hey ! Moi c'est ItsCirly. Bienvenue a STATION TYCOON !", "wave", 2.2)
-		end
 		animer("sit", true)
 	else
 	-- plan 1 : contre-plongee legere sur ItsCirly depuis l'epaule du joueur
@@ -563,6 +582,7 @@ Etapes.accueil = function(P)
 	end
 	-- plan 2 : la camera glisse en travelling vers le plot pendant qu'il pointe
 	local depuis = PK and (PK.cfCourant or spawn) or spawn
+	if PK then task.wait(0.6) end
 	task.spawn(function() camVers(CFrame.lookAt((depuis * CFrame.new(-10, 7, 5)).Position, monde(S.commun.nx / 2, 4, 0).Position), 2.4) end)
 	if not PK then regarder(monde(S.commun.nx / 2, 4, 0).Position) end
 	dire("Tu vois ce terrain ? C'est le TIEN. Je t'ai prepare une petite station pour demarrer.", "point", 2.2)
@@ -609,15 +629,23 @@ end
 -- (survirage + roulis sur deux roues), ItsCirly assis dans la benne qui glisse vers la ridelle, se rattrape, retombe
 -- quand le pick-up retombe sur ses quatre roues.
 -- ----------------------------------------------------------------------------------------------------------------------
+local G_STUDS = 45                   -- gravite : 9,81 m/s2 x 4,59 studs/m
 local PICKUP = {
 	longueur = 27.1,             -- studs (F-150 5,91 m x 4,59 ; repris de Catalogue/Car si disponible)
-	derive = math.rad(32),       -- angle de survirage pendant la glissade (toute la zone "derapage" : trottoir -> entree)
-	roulis = math.rad(26),       -- inclinaison sur deux roues
-	dureeDeuxRoues = 0.45,       -- secondes : le passage sur deux roues est UNE IMPULSION BREVE au sommet du virage (Thomas :
-	                             -- "tres leger, tres rapide"), puis retombee seche avec un petit rebond
-	apex = 0.45,                 -- position du sommet du virage dans la zone de derapage (0 = debut, 1 = fin)
-	glisse = 5.5,                -- studs : glissement d'ItsCirly vers la ridelle ; il DEPASSE la ridelle (a moitie dehors)
-	accel = 22,                  -- studs/s^2
+	-- pilote
+	vCroisiere = 36,             -- studs/s sur la branche (~28 km/h)
+	accel = 7.5,                 -- studs/s^2 : il accumule de la vitesse progressivement (moins de poussee a haute vitesse)
+	frein = 20,                  -- studs/s^2 : freinage avant le virage
+	aLatCible = 30,              -- studs/s^2 (0,67 g) : adherence visee dans le virage -> vitesse d'entree = sqrt(aLatCible / courbure)
+	-- derapage et basculement
+	deriveMax = math.rad(30),    -- survirage maximum quand le train arriere decroche
+	accroche = 100,              -- studs/s^2 (2,2 g) : coup de roue lateral quand les pneus reaccrochent a la sortie du virage
+	dureeAccroche = 0.20,        -- s : duree de ce coup de roue ; c'est lui qui met le pick-up sur deux roues (~10 deg, ~0,6 s)
+	hCg = 3.6, demiVoie = 4.6,   -- hauteur du centre de gravite et demi-voie (studs) : moment de basculement vs poids
+	restitution = 0.28,          -- rebond a la retombee sur les quatre roues
+	-- ItsCirly
+	frottement = 0.45,           -- adherence d'ItsCirly sur le plancher de la benne (coefficient) : il glisse au-dela
+	debord = 2.4,                -- studs : de combien il peut depasser une paroi (a moitie dehors) avant de se rattraper
 }
 
 local function creerPickup(nomModele)
@@ -633,10 +661,9 @@ local function creerPickup(nomModele)
 		if d:IsA("BaseScript") then d:Destroy()
 		elseif d:IsA("BasePart") then d.Anchored = true; d.CanCollide = false; d.CanQuery = false; d.CanTouch = false end
 	end
-	-- echelle : longueur reelle du F-150 (Catalogue/Car.Longueur), le modele est dessine beaucoup plus grand
 	local voulu = PICKUP.longueur
 	pcall(function() local Car = require(ReplicatedStorage:WaitForChild("Catalogue"):WaitForChild("Car")); voulu = Car.Longueur("F150") or voulu end)
-	local okB, cfB, taille = pcall(function() return m:GetBoundingBox() end)
+	local okB, _, taille = pcall(function() return m:GetBoundingBox() end)
 	if okB and taille then
 		local L = math.max(taille.X, taille.Z)
 		if L > 1 then pcall(function() m:ScaleTo(m:GetScale() * voulu / L) end) end
@@ -644,73 +671,70 @@ local function creerPickup(nomModele)
 	m.Name = "PickupCirly"
 	m.Parent = dossier()
 	local pivot = m:GetPivot()
-	local PK = { modele = m, roues = {}, parts = {} }
-	-- le repere "sol" du pick-up : X = cote, Y = haut, Z = arriere (le modele regarde -Z : phares a l'avant)
+	local PK = { modele = m, roues = {}, parts = {}, angle = 0 }
 	local okB2, cfB2, taille2 = pcall(function() return m:GetBoundingBox() end)
 	PK.taille = (okB2 and taille2) or Vector3.new(10, 8, 27)
 	PK.bas = okB2 and (pivot:PointToObjectSpace(cfB2.Position).Y - taille2.Y / 2) or -4
-	-- roues : groupes Wheel_FL / FR / RL / RR (3 pieces chacune) ; axe = X du modele ; rayon = la plus grande piece
+	PK.demiVoie = math.min(PICKUP.demiVoie, PK.taille.X / 2 - 0.4)
 	local groupes = {}
 	for _, p in ipairs(m:GetDescendants()) do
 		if p:IsA("BasePart") then
 			local g = string.match(p.Name, "^Wheel_(%u%u)")
 			if g then
 				groupes[g] = groupes[g] or { parts = {}, somme = Vector3.zero, n = 0, rayon = 0 }
-				local G = groupes[g]
-				table.insert(G.parts, { part = p, offset = pivot:ToObjectSpace(p.CFrame) })
-				G.somme += pivot:PointToObjectSpace(p.Position); G.n += 1
-				G.rayon = math.max(G.rayon, math.max(p.Size.Y, p.Size.Z) / 2)
+				local Gq = groupes[g]
+				table.insert(Gq.parts, { part = p, offset = pivot:ToObjectSpace(p.CFrame) })
+				Gq.somme += pivot:PointToObjectSpace(p.Position); Gq.n += 1
+				Gq.rayon = math.max(Gq.rayon, math.max(p.Size.Y, p.Size.Z) / 2)
 			else
 				table.insert(PK.parts, { part = p, offset = pivot:ToObjectSpace(p.CFrame) })
 			end
 		end
 	end
-	for g, G in pairs(groupes) do
-		G.centre = G.somme / G.n
-		table.insert(PK.roues, G)
-	end
+	for _, Gq in pairs(groupes) do Gq.centre = Gq.somme / Gq.n; table.insert(PK.roues, Gq) end
 	-- la benne : derriere la cabine ("windo" / "contour"), dessus des flancs ("gris" ou "black")
 	local cab, flanc = m:FindFirstChild("windo") or m:FindFirstChild("contour"), m:FindFirstChild("gris") or m:FindFirstChild("black")
 	local zCab = cab and (pivot:PointToObjectSpace(cab.Position).Z + cab.Size.Z / 2) or -2
 	local yFlanc = flanc and (pivot:PointToObjectSpace(flanc.Position).Y + flanc.Size.Y / 2) or 2
-	local zArriere = PK.taille.Z / 2 - 1.0
-	PK.benne = { zAvant = zCab + 1.2, zArriere = zArriere, y = yFlanc - 0.6 }
-	PK.angle = 0
+	PK.benne = { zMin = zCab + 1.3, zMax = PK.taille.Z / 2 - 1.0 - 1.0, xMax = PK.taille.X / 2 - 1.3, y = yFlanc - 0.6, repos = Vector2.new(0, zCab + 2.6) }
+	-- etat du passager (repere caisse) : position, vitesse, hauteur de saut
+	PK.cir = { x = 0, z = PK.benne.repos.Y, vx = 0, vz = 0, y = 0, vy = 0 }
 	return PK
 end
 
--- pose toutes les pieces : cf = repere du pick-up (sans roulis), roulis autour de l'axe des roues exterieures, derive = lacet
-local function poserPickup(PK, cf, derive, roulis, cote)
-	local base = cf * CFrame.Angles(0, derive, 0)
-	if math.abs(roulis) > 1e-3 then
-		-- pivot du roulis : la ligne de contact des roues du cote exterieur (bas du modele, demi-largeur)
-		local demi = PK.taille.X / 2 - 0.4
-		local axe = CFrame.new(cote * demi, PK.bas, 0)       -- cote exterieur du virage (virage a gauche : les roues droites)
-		base = base * axe * CFrame.Angles(0, 0, roulis) * axe:Inverse()
+-- pose toutes les pieces. cf = repere du chassis (position + cap, sans derive) ; derive = lacet (survirage) ; susp / tangage =
+-- roulis et tangage de suspension (autour du centre) ; theta = basculement autour de la ligne des roues EXTERIEURES (ext = +1 : roues droites)
+local function poserPickup(PK, cf, derive, susp, tangage, theta, ext)
+	local base = cf * CFrame.Angles(0, derive, 0) * CFrame.Angles(tangage, 0, susp)
+	if theta > 1e-4 then
+		local axe = CFrame.new(ext * PK.demiVoie, PK.bas, 0)
+		base = base * axe * CFrame.Angles(0, 0, -ext * theta) * axe:Inverse()
 	end
 	PK.cfCourant = base
 	for _, e in ipairs(PK.parts) do e.part.CFrame = base * e.offset end
-	for _, G in ipairs(PK.roues) do
-		local rot = CFrame.new(G.centre) * CFrame.Angles(PK.angle, 0, 0) * CFrame.new(-G.centre)
-		for _, e in ipairs(G.parts) do e.part.CFrame = base * rot * e.offset end
+	for _, Gq in ipairs(PK.roues) do
+		local rot = CFrame.new(Gq.centre) * CFrame.Angles(PK.angle, 0, 0) * CFrame.new(-Gq.centre)
+		for _, e in ipairs(Gq.parts) do e.part.CFrame = base * rot * e.offset end
 	end
 end
 
--- ItsCirly dans la benne, chaque image : glisse (0..1) vers la ridelle, penche (radians) et saut (studs) selon le roulis
+-- ItsCirly dans la benne, chaque image, d'apres l'etat PK.cir (masse qui glisse) ; regarderVers : il se tourne vers ce point au repos
 local function dansLaBenne(PK, regarderVers)
 	local guide = S.guide
 	if not (guide and PK) then return function() end end
 	animer("sit", true)
-	PK.glisse, PK.penche, PK.saut, PK.lateral = 0, 0, 0, 0
 	local nom = "TutoBenne"
 	RunService:BindToRenderStep(nom, Enum.RenderPriority.Camera.Value - 1, function()
 		if not (PK.modele.Parent and guide.Parent and PK.cfCourant) then return end
-		local b = PK.benne
-		local g = math.clamp(PK.glisse, 0, 1.35)
-		local z = b.zAvant + 1.6 + (b.zArriere - b.zAvant - 2.6) * g
-		local chute = math.max(0, g - 1) * 2.6                      -- au-dela de la ridelle : il bascule par-dessus
-		local cf = PK.cfCourant * CFrame.new(0, b.y + 1.1 + PK.saut - chute, z) * CFrame.Angles(0, math.pi, 0) * CFrame.Angles(PK.penche, 0, PK.lateral or 0)
-		if regarderVers and PK.glisse < 0.05 then
+		local b, c = PK.benne, PK.cir
+		local debordZ = math.max(0, c.z - b.zMax)
+		local debordX = math.max(0, math.abs(c.x) - b.xMax)
+		local over = debordZ + debordX
+		local vit = math.sqrt(c.vx * c.vx + c.vz * c.vz)
+		local penche = -over * 0.5 - math.min(0.5, vit * 0.04)                      -- bascule en arriere par-dessus la ridelle
+		local lateral = math.clamp(-c.vx * 0.08 - (over > 0 and (c.x / b.xMax) * 0.3 or 0), -0.9, 0.9)
+		local cf = PK.cfCourant * CFrame.new(c.x, b.y + 1.1 + c.y - over * 1.1, c.z) * CFrame.Angles(0, math.pi, 0) * CFrame.Angles(penche, 0, lateral)
+		if regarderVers and vit < 0.3 and over == 0 then
 			local p = cf.Position
 			local cible = Vector3.new(regarderVers.X, p.Y, regarderVers.Z)
 			if (cible - p).Magnitude > 0.5 then cf = CFrame.lookAt(p, cible) end
@@ -720,42 +744,40 @@ local function dansLaBenne(PK, regarderVers)
 	return function() RunService:UnbindFromRenderStep(nom) end
 end
 
--- joue le trajet du pick-up (points du serveur : {cf, v, derapage}) ; bloque jusqu'a l'arret. onDerapage() est appele au
--- debut du derapage, onRetombe() quand il retombe sur ses quatre roues.
-local function roulerPickup(PK, points, onDerapage, onRetombe)
+-- joue le trajet du pick-up (points du serveur : {cf}) avec une DYNAMIQUE de vehicule ; bloque jusqu'a l'arret.
+-- Rappels : onDerapage(ext) au debut de la glissade, onDeuxRoues() quand il decolle, onRetombe() quand il retombe.
+local function roulerPickup(PK, points, onDerapage, onDeuxRoues, onRetombe)
 	if #points == 0 then return end
-	-- 1) courbe : Bezier cubique par segment (meme regle que CarManager : poignees = corde / 3 le long des caps), echantillonnee
-	local chemin = {}             -- { pos, dir, s (abscisse), v (vitesse cible), derapage }
+	-- 1) courbe (Bezier cubique par segment, poignees = corde / 3), echantillonnee, avec sa COURBURE signee (+ = virage a gauche)
+	local chemin = {}
 	local prev = points[1].cf
 	local s = 0
-	table.insert(chemin, { pos = prev.Position, dir = prev.LookVector, s = 0, v = points[1].v, derapage = points[1].derapage })
+	table.insert(chemin, { pos = prev.Position, dir = prev.LookVector, s = 0, k = 0 })
 	for i = 2, #points do
-		local P1 = points[i]
-		local p0, p2 = prev.Position, P1.cf.Position
-		local k = (p2 - p0).Magnitude / 3
-		local c1, c2 = p0 + prev.LookVector * k, p2 - P1.cf.LookVector * k
+		local P1 = points[i].cf
+		local p0, p2 = prev.Position, P1.Position
+		local kk = (p2 - p0).Magnitude / 3
+		local c1, c2 = p0 + prev.LookVector * kk, p2 - P1.LookVector * kk
 		local dernier = chemin[#chemin].pos
-		for j = 1, 20 do
-			local t = j / 20; local u = 1 - t
+		for j = 1, 30 do
+			local t = j / 30; local u = 1 - t
 			local pt = u^3 * p0 + 3 * u^2 * t * c1 + 3 * u * t^2 * c2 + t^3 * p2
 			local d = pt - dernier
 			s += d.Magnitude
-			table.insert(chemin, { pos = pt, dir = d.Magnitude > 1e-4 and d.Unit or P1.cf.LookVector, s = s, v = P1.v, derapage = P1.derapage })
+			table.insert(chemin, { pos = pt, dir = d.Magnitude > 1e-4 and d.Unit or P1.LookVector, s = s, k = 0 })
 			dernier = pt
 		end
-		prev = P1.cf
+		prev = P1
 	end
 	local longueur = s
-	-- zone de derapage : du premier au dernier echantillon marque
-	local sDebut, sFin = nil, nil
-	for _, e in ipairs(chemin) do if e.derapage then sDebut = sDebut or e.s; sFin = e.s end end
-	-- sens du virage dans la zone (gauche = +1, droite = -1) : produit vectoriel des caps a l'entree et a la sortie
-	local cote = 1
-	if sDebut then
-		local dA, dB = nil, nil
-		for _, e in ipairs(chemin) do if e.s >= sDebut and not dA then dA = e.dir end; if e.s <= sFin then dB = e.dir end end
-		if dA and dB then local c = dA:Cross(dB); cote = (c.Y >= 0) and 1 or -1 end
+	for i = 2, #chemin - 1 do
+		local a, b = chemin[i - 1], chemin[i + 1]
+		local cr = a.dir.X * b.dir.Z - a.dir.Z * b.dir.X
+		local ang = math.asin(math.clamp(-cr, -1, 1))
+		local ds = b.s - a.s
+		chemin[i].k = ds > 1e-4 and ang / ds or 0
 	end
+	for _ = 1, 2 do for i = 2, #chemin - 1 do chemin[i].k = (chemin[i - 1].k + chemin[i].k + chemin[i + 1].k) / 3 end end
 	local function echantillon(x)
 		x = math.clamp(x, 0, longueur)
 		local lo, hi = 1, #chemin
@@ -763,64 +785,125 @@ local function roulerPickup(PK, points, onDerapage, onRetombe)
 		local a, b = chemin[lo], chemin[hi]
 		local t = (b.s > a.s) and (x - a.s) / (b.s - a.s) or 0
 		local dir = a.dir:Lerp(b.dir, t)
-		return a.pos:Lerp(b.pos, t), (dir.Magnitude > 1e-4 and dir.Unit or a.dir), (a.v or 0) * (1 - t) + (b.v or 0) * t
+		return a.pos:Lerp(b.pos, t), (dir.Magnitude > 1e-4 and dir.Unit or a.dir), a.k * (1 - t) + b.k * t
 	end
-	-- 2) deplacement : vitesse lissee (acceleration bornee), abscisse, roulis / derive en etats continus
-	local x, v = 0, points[1].v or 10
-	local derive, roulis, saut = 0, 0, 0
-	local enDerapage, retombe = false, false
-	local vRoulis = 0
-	local apex = sDebut and (sDebut + (sFin - sDebut) * PICKUP.apex) or nil
-	local tDeux = nil            -- chrono de l'impulsion "deux roues" (nil tant qu'on n'a pas passe l'apex)
-	poserPickup(PK, CFrame.lookAt(chemin[1].pos, chemin[1].pos + chemin[1].dir), 0, 0, cote)
+	-- abscisse du premier point marque "virage" (le trottoir) : l'accroche ne peut arriver qu'apres
+	local sVirage = longueur
+	do local acc = 0; for i = 2, #points do acc += (points[i].cf.Position - points[i - 1].cf.Position).Magnitude; if points[i].virage then sVirage = acc break end end end
+	-- 2) etat
+	local x, v, aLong, aLat = 0, 0, 0, 0
+	local derive, susp, tangage = 0, 0, 0
+	local theta, omega, maxTheta = 0, 0, 0
+	local viree, accroche, decolle, retombe = false, nil, false, false
+	local ext = 1
+	local c = PK.cir
+	poserPickup(PK, CFrame.lookAt(chemin[1].pos, chemin[1].pos + chemin[1].dir), 0, 0, 0, 0, 1)
 	local t0 = os.clock()
-	while x < longueur - 0.05 and PK.modele.Parent and os.clock() - t0 < 40 do
+	while PK.modele.Parent and os.clock() - t0 < 60 do
 		local dt = math.min(RunService.RenderStepped:Wait(), 0.05)
-		local _, _, vCible = echantillon(x + 6)
-		if vCible < 0.5 and longueur - x < 18 then vCible = math.max(1.5, (longueur - x) * 0.9) end   -- freinage final
-		local dv = vCible - v
-		v += math.clamp(dv, -PICKUP.accel * 1.8 * dt, PICKUP.accel * dt)
+		-- pilote : il regarde la courbure sur sa distance de freinage et ralentit pour tenir aLatCible dans le virage
+		local distFrein = v * v / (2 * PICKUP.frein) + 12
+		local kMax = 0
+		local xx = x
+		while xx < math.min(longueur, x + distFrein) do local _, _, kq = echantillon(xx); kMax = math.max(kMax, math.abs(kq)); xx += 3 end
+		local vCible = PICKUP.vCroisiere
+		if kMax > 0.004 then vCible = math.min(vCible, math.sqrt(PICKUP.aLatCible / kMax)) end
+		local reste = longueur - x
+		if reste < 40 then vCible = math.min(vCible, math.max(1.2, math.sqrt(2 * 6 * math.max(0, reste - 1.5)))) end
+		local aCmd = (vCible > v) and PICKUP.accel * (1 - v / (PICKUP.vCroisiere + 14)) or -PICKUP.frein
+		if accroche and accroche < PICKUP.dureeAccroche then aCmd += 16 end             -- il remet les gaz en sortie
+		aCmd = math.clamp(aCmd, -PICKUP.frein, PICKUP.accel)
+		if math.abs(vCible - v) < math.abs(aCmd) * dt then aCmd = (vCible - v) / dt end
+		aLong = aCmd
+		v = math.max(0, v + aCmd * dt)
 		x += v * dt
-		local pos, dir = echantillon(x)
+		local pos, dir, k = echantillon(x)
 		local cf = CFrame.lookAt(pos, pos + dir)
-		-- derapage : dans la zone, la derive et le roulis montent ; en sortant, retombee avec rebond (ressort amorti)
-		local dansZone = sDebut and x >= sDebut and x <= sFin
-		if dansZone and not enDerapage then enDerapage = true; if onDerapage then task.spawn(onDerapage, cote) end end
-		-- survirage pendant toute la glissade ; DEUX ROUES = impulsion breve au sommet du virage, puis retombee seche
-		if apex and not tDeux and x >= apex then tDeux = 0 end
-		local surDeuxRoues = tDeux ~= nil and tDeux < PICKUP.dureeDeuxRoues
-		if tDeux then tDeux += dt end
-		local cibleDerive = dansZone and cote * PICKUP.derive or 0
-		local cibleRoulis = surDeuxRoues and -cote * PICKUP.roulis or 0
-		derive += (cibleDerive - derive) * math.min(1, dt * (dansZone and 6 or 4))
-		if surDeuxRoues then
-			roulis += (cibleRoulis - roulis) * math.min(1, dt * 16)      -- monte d'un coup
-			vRoulis = 0
-		else
-			-- ressort raide : le pick-up retombe sur ses roues, un petit rebond et c'est fini
-			local acc = -roulis * 260 - vRoulis * 13
-			vRoulis += acc * dt
-			roulis += vRoulis * dt
-			if tDeux and not retombe and tDeux > PICKUP.dureeDeuxRoues and math.abs(roulis) < PICKUP.roulis * 0.3 then retombe = true; if onRetombe then task.spawn(onRetombe) end end
+		-- lateral : a = v^2 x courbure ; derapage quand le train arriere decroche (survirage proportionnel)
+		local aLatVirage = v * v * k
+		if math.abs(aLatVirage) > 1 then ext = (aLatVirage >= 0) and 1 or -1 end
+		local glisse = math.max(0, math.abs(aLatVirage) - 18) / 40
+		local cibleDerive = (aLatVirage >= 0 and 1 or -1) * math.min(PICKUP.deriveMax, glisse * PICKUP.deriveMax)
+		derive += (cibleDerive - derive) * math.min(1, dt * 6)
+		if math.abs(aLatVirage) > 22 and not viree then viree = true; if onDerapage then task.spawn(onDerapage, ext) end end
+		-- accroche : la courbure retombe, les pneus reprennent d'un coup -> coup de roue lateral
+		if viree and not accroche and math.abs(k) < 0.012 and x > sVirage then accroche = 0 end
+		aLat = aLatVirage
+		if accroche then
+			if accroche < PICKUP.dureeAccroche then aLat += (derive >= 0 and 1 or -1) * PICKUP.accroche end
+			accroche += dt
 		end
-		saut = 0
-		-- roues : rotation selon la distance (rayon de la premiere roue)
+		-- suspension : roulis et tangage proportionnels aux forces
+		susp += (math.clamp(-aLat * 0.0022, -0.12, 0.12) - susp) * math.min(1, dt * 8)
+		tangage += ((-aLong * 0.0045) - tangage) * math.min(1, dt * 6)
+		-- basculement : la caisse pivote autour des roues exterieures si le moment de la force laterale depasse celui du poids
+		local I = PICKUP.hCg * PICKUP.hCg + PK.demiVoie * PK.demiVoie
+		local cs, sn = math.cos(theta), math.sin(theta)
+		local alpha = (math.abs(aLat) * PICKUP.hCg * cs - G_STUDS * (PK.demiVoie * cs - PICKUP.hCg * sn)) / I
+		local impact = 0
+		if theta > 0 or alpha > 0 then
+			omega += alpha * dt
+			theta += omega * dt
+			if theta > 0.03 and not decolle then decolle = true; if onDeuxRoues then task.spawn(onDeuxRoues) end end
+			if theta < 0 then
+				theta = 0
+				if omega < -0.4 then impact = math.min(1, -omega * 0.5) end
+				omega = -omega * PICKUP.restitution
+				if math.abs(omega) < 0.25 then omega = 0 end
+			end
+		else
+			omega = 0
+		end
+		maxTheta = math.max(maxTheta, theta)
+		if decolle and not retombe and maxTheta > 0.05 and theta < 0.02 and accroche and accroche > 0.5 then retombe = true; if onRetombe then task.spawn(onRetombe) end end
+		-- ItsCirly : masse dans la benne. Force ressentie = inertie (opposee a l'acceleration du vehicule) + gravite le long du
+		-- plancher incline ; frottement sec : il tient tant que ca reste sous l'adherence, puis glisse
+		local b = PK.benne
+		local gx = aLat + ext * G_STUDS * math.sin(theta)         -- vers l'exterieur du virage (la caisse pivote sur les roues exterieures)
+		local gz = -aLong                                          -- vers la ridelle quand le vehicule accelere, vers la cabine au freinage
+		local dansBenne = math.abs(c.x) <= b.xMax + 0.05 and c.z <= b.zMax + 0.05
+		local muG = PICKUP.frottement * G_STUDS * (dansBenne and 1 or 0.35)
+		local vit = math.sqrt(c.vx * c.vx + c.vz * c.vz)
+		local ax, az = gx, gz
+		if vit < 0.3 and math.sqrt(ax * ax + az * az) < muG then
+			ax, az, c.vx, c.vz = 0, 0, 0, 0
+		else
+			local n = math.max(1e-3, vit)
+			ax -= muG * c.vx / n; az -= muG * c.vz / n
+		end
+		c.vx += ax * dt; c.vz += az * dt; c.x += c.vx * dt; c.z += c.vz * dt
+		-- parois : il peut deborder un peu (a moitie dehors) puis se rattrape (ressort vers l'interieur)
+		if math.abs(c.x) > b.xMax then
+			local d = (math.abs(c.x) - b.xMax) * (c.x >= 0 and 1 or -1)
+			if math.abs(d) > PICKUP.debord then c.x = (c.x >= 0 and 1 or -1) * (b.xMax + PICKUP.debord) end
+			c.vx += (-d * 60 - c.vx * 4) * dt
+		end
+		if c.z > b.zMax then
+			local d = c.z - b.zMax
+			if d > PICKUP.debord then c.z = b.zMax + PICKUP.debord end
+			c.vz += (-d * 60 - c.vz * 4) * dt
+		end
+		if c.z < b.zMin then c.z = b.zMin; c.vz = math.max(0, c.vz) end
+		-- il revient se rasseoir quand tout est calme
+		if math.sqrt(aLat * aLat + aLong * aLong) < 8 and theta < 0.01 then
+			c.vx += ((b.repos.X - c.x) * 5 - c.vx * 3) * dt
+			c.vz += ((b.repos.Y - c.z) * 5 - c.vz * 3) * dt
+		end
+		if impact > 0 then c.vy += impact * 9 end
+		c.vy -= G_STUDS * dt * 0.35
+		c.y = math.max(0, c.y + c.vy * dt)
+		if c.y == 0 and c.vy < 0 then c.vy = 0 end
+		-- roues et pose
 		local rayon = PK.roues[1] and PK.roues[1].rayon or 2
 		PK.angle -= (v * dt) / rayon
-		poserPickup(PK, cf, derive, roulis, cote)
-		-- ItsCirly : A MOITIE DEHORS au plus fort du roulis : il glisse jusqu'a depasser la ridelle (glisse > 1), bascule en
-		-- arriere par-dessus (penche), penche aussi vers l'exterieur (lateral), et saute un peu a la retombee
-		local r = math.abs(roulis) / PICKUP.roulis
-		PK.glisse = math.clamp(r * 1.7 * (PICKUP.glisse / 5.5), 0, 1.35)
-		PK.penche = -r * 1.25
-		PK.lateral = roulis * 0.9
-		PK.saut = (tDeux and not retombe) and math.clamp(math.abs(vRoulis) * 0.15, 0, 1.4) or 0
-		PK.vitesse = v
+		poserPickup(PK, cf, derive, susp, tangage, theta, ext)
+		PK.vitesse, PK.aLat, PK.theta, PK.viree, PK.accroche = v, aLat, theta, viree, accroche
+		if x >= longueur - 0.05 or (reste < 2 and v < 0.3) then break end
 	end
 	-- arret propre
 	local fin = points[#points].cf
-	poserPickup(PK, fin, 0, 0, cote)
-	PK.glisse, PK.penche, PK.saut, PK.lateral = 0, 0, 0, 0
+	poserPickup(PK, fin, 0, 0, 0, 0, 1)
+	c.vx, c.vz, c.vy, c.y = 0, 0, 0, 0
 end
 
 -- ItsCirly assis sur le toit de la voiture, cote client (chaque image)

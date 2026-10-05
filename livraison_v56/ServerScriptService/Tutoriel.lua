@@ -297,7 +297,8 @@ function Tutoriel.Lancer(player, spawnFolder, plotFolder, options)
 
 		-- v56 (Thomas) : ItsCirly ARRIVE DANS SON PICK-UP F-150, assis dans la benne ; le pick-up descend la branche, derape en
 		-- entrant dans le plot (deux roues, ItsCirly manque de tomber de la benne), retombe et va se garer sur l'herbe.
-		-- Tout est joue cote client (ClientTutoriel) a partir de ces points ; le modele doit etre dans ReplicatedStorage
+		-- Tout est joue cote client (ClientTutoriel : dynamique du vehicule, pilote qui accelere puis freine, basculement par inertie)
+		-- a partir de ces points ; le modele doit etre dans ReplicatedStorage
 		-- (Model "F150", ou Folder "F150_Peintures" avec les 5 couleurs : une au hasard). Sans modele : ancien comportement.
 		local pickup = nil
 		do
@@ -309,24 +310,24 @@ function Tutoriel.Lancer(player, spawnFolder, plotFolder, options)
 				local points = {}
 				local file = spawnFolder:FindFirstChild("QueueNodes")
 				local n = file and #file:GetChildren() or 0
-				for i = math.min(n, 5), 1, -1 do                        -- les 5 derniers noeuds de la file, du haut vers l'entree
+				for i = math.min(n, 9), 1, -1 do                        -- les 9 derniers noeuds de la file, du haut vers l'entree (il prend de la vitesse)
 					local node = file:FindFirstChild(tostring(i))
-					if node then table.insert(points, { cf = node.CFrame, v = (i <= 2) and 26 or 34 }) end
+					if node then table.insert(points, { cf = node.CFrame }) end
 				end
 				local entree = spawnFolder:FindFirstChild("Entree")
 				local trottoir = entree and entree:FindFirstChild("Trottoir")
-				if trottoir then table.insert(points, { cf = trottoir.CFrame, v = 24, derapage = true }) end
-				if entree then table.insert(points, { cf = entree.CFrame, v = 20, derapage = true }) end
+				if trottoir then table.insert(points, { cf = trottoir.CFrame, virage = true }) end     -- le virage dans le plot : derapage ici
+				if entree then table.insert(points, { cf = entree.CFrame }) end
 				local dirPlot = entree and entree.CFrame.LookVector or (pc:GetPivot().RightVector * (P.A and 1 or -1))
 				local c1 = cfCase(pc, mx(3), 4.5, 0.6)
-				table.insert(points, { cf = CFrame.lookAt(c1.Position, c1.Position + dirPlot), v = 13 })
+				table.insert(points, { cf = CFrame.lookAt(c1.Position, c1.Position + dirPlot) })
 				-- parking sur l'herbe : colonnes 3-4, rangee 8 (hors du goudron, de la station et du chemin pieton)
 				local c2 = cfCase(pc, mx(3.5), 6.6, 0.6)
 				local park = cfCase(pc, mx(3.5), 8.6, 0.6)
 				local versFond = (park.Position - c2.Position).Unit
-				table.insert(points, { cf = CFrame.lookAt(c2.Position, c2.Position + versFond), v = 8 })
+				table.insert(points, { cf = CFrame.lookAt(c2.Position, c2.Position + versFond) })
 				local cfPark = CFrame.lookAt(park.Position, park.Position + versFond)
-				table.insert(points, { cf = cfPark, v = 0 })
+				table.insert(points, { cf = cfPark })
 				return { modele = modele.Name, points = points, parking = cfPark, versJoueur = cfSpawn.Position }
 			end)
 			if okP then pickup = res else warn("[Tutoriel] pickup : " .. tostring(res)) end

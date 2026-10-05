@@ -14,15 +14,15 @@ body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font-body);
 header{padding:12px 16px 6px;display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 16px}
 header h1{font-family:var(--font-display);font-weight:800;font-size:20px;margin:0;text-wrap:balance}
 header p{margin:0;color:var(--muted);font-size:13px}
-#scene{position:relative;flex:1;min-height:360px;margin:0 16px;border-radius:12px;overflow:hidden;background:#88a0c4}
+#scene{position:relative;flex:1;min-height:380px;margin:0 16px;border-radius:12px;overflow:hidden;background:#88a0c4}
 #scene canvas{display:block;width:100%;height:100%}
 #phase{position:absolute;top:12px;left:12px;background:rgba(20,26,31,.72);color:#fff;font-weight:800;font-size:13px;letter-spacing:.04em;text-transform:uppercase;padding:6px 10px;border-radius:8px}
-#chrono{position:absolute;top:12px;right:12px;background:rgba(20,26,31,.72);color:#fff;font-size:13px;padding:6px 10px;border-radius:8px;font-variant-numeric:tabular-nums}
+#tele{position:absolute;top:12px;right:12px;background:rgba(20,26,31,.72);color:#fff;font-size:12.5px;padding:6px 10px;border-radius:8px;font-variant-numeric:tabular-nums;text-align:right;line-height:1.45}
 #sub{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);max-width:min(700px,92%);background:rgba(23,143,85,.92);color:#fff;font-weight:800;font-size:clamp(14px,2vw,20px);padding:10px 18px;border-radius:14px;text-align:center;opacity:0;transition:opacity .25s}
 #sub.on{opacity:1}
-#bandes:before,#bandes:after{content:"";position:absolute;left:0;right:0;height:7%;background:#000;pointer-events:none}
+#bandes:before,#bandes:after{content:"";position:absolute;left:0;right:0;height:7%;background:#000;pointer-events:none;z-index:2}
 #bandes:before{top:0} #bandes:after{bottom:0}
-.controls{margin:10px 16px 16px;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px 18px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.controls{margin:10px 16px 16px;display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px 18px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
 .controls label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--muted)}
 .controls label b{color:var(--fg);font-weight:800;display:flex;justify-content:space-between;font-variant-numeric:tabular-nums}
 .controls input[type=range]{width:100%}
@@ -35,12 +35,12 @@ button:focus-visible{outline:3px solid var(--accent2);outline-offset:2px}
 </style>
 <header>
   <h1>Intro du tutoriel : ItsCirly arrive en F-150</h1>
-  <p>Prévisualisation de la chorégraphie codée dans <code>ClientTutoriel</code> (mêmes courbes, vitesses, dérapage et rebond). Plot de type A, décor simplifié.</p>
+  <p>Simulation de la chorégraphie codée dans <code>ClientTutoriel</code> : dynamique du véhicule (accélération, freinage, roulis, basculement sur deux roues par inertie puis gravité) et ItsCirly comme une masse qui glisse dans la benne. Plot de type A, décor simplifié.</p>
 </header>
 <div id="scene">
   <div id="bandes"></div>
   <div id="phase">Noir</div>
-  <div id="chrono">0,0 s</div>
+  <div id="tele"></div>
   <div id="sub"></div>
 </div>
 <div class="controls">
@@ -51,16 +51,17 @@ button:focus-visible{outline:3px solid var(--accent2);outline-offset:2px}
     <span style="color:var(--muted);font-size:13px">Caméra libre : glisser pour tourner, molette pour zoomer.</span>
   </div>
   <label><b>Vitesse de lecture <span id="v_speed">1,0×</span></b><input id="speed" type="range" min="0.25" max="2" step="0.25" value="1"></label>
-  <label><b>Dérive (survirage) <span id="v_derive">32°</span></b><input id="derive" type="range" min="10" max="50" step="1" value="32"></label>
-  <label><b>Roulis (deux roues) <span id="v_roulis">26°</span></b><input id="roulis" type="range" min="8" max="40" step="1" value="26"></label>
-  <label><b>Durée sur deux roues <span id="v_duree">0,45 s</span></b><input id="duree" type="range" min="0.15" max="1.5" step="0.05" value="0.45"></label>
-  <label><b>Glissement d'ItsCirly <span id="v_glisse">5,5 studs</span></b><input id="glisse" type="range" min="0" max="9" step="0.5" value="5.5"></label>
-  <p class="note">Les quatre réglages correspondent à la table <code>PICKUP</code> de <code>ClientTutoriel</code> (derive, roulis, dureeDeuxRoues, glisse). Dis-moi les valeurs qui te plaisent et je les reporte dans le code.</p>
+  <label><b>Vitesse de croisière <span id="v_vmax">36 studs/s</span></b><input id="vmax" type="range" min="20" max="50" step="1" value="36"></label>
+  <label><b>Adhérence en virage <span id="v_alat">0,67 g</span></b><input id="alat" type="range" min="18" max="50" step="1" value="30"></label>
+  <label><b>Coup de roue à l'accroche <span id="v_jolt">100 studs/s² (2,2 g)</span></b><input id="jolt" type="range" min="0" max="160" step="5" value="100"></label>
+  <label><b>Durée de l'accroche <span id="v_dur">0,20 s</span></b><input id="dur" type="range" min="0.1" max="0.4" step="0.02" value="0.2"></label>
+  <label><b>Adhérence d'ItsCirly <span id="v_mu">0,45</span></b><input id="mu" type="range" min="0.2" max="1" step="0.05" value="0.45"></label>
+  <p class="note">Ces réglages correspondent à la table <code>PICKUP</code> de <code>ClientTutoriel</code> (vCroisiere, aLatCible, accroche, dureeAccroche, frottement). Le pick-up se met sur deux roues par inertie : à la sortie du virage les pneus accrochent d'un coup, la caisse bascule autour des roues extérieures puis la gravité la ramène (un seul rebond). Avec les valeurs par défaut : ~10° pendant ~0,6 s. Les grandeurs sont en studs (1 m = 4,59 studs, g = 45 studs/s²). Dis-moi ce qui te plaît et je le reporte.</p>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
 (function(){
-const CASE=15, DEMI=7.5;
+const CASE=15, DEMI=7.5, G=45;             // gravite : 9,81 m/s2 x 4,59 studs/m
 const monde=(x,z,y)=>new THREE.Vector3((x-0.5)*CASE, y||0, (z-0.5)*CASE-DEMI);
 // ------------------------------------------------------------------ scene
 const wrap=document.getElementById('scene');
@@ -70,218 +71,258 @@ renderer.shadowMap.enabled=true;
 wrap.appendChild(renderer.domElement);
 const scene=new THREE.Scene();
 scene.background=new THREE.Color(0x9fb6d6);
-scene.fog=new THREE.Fog(0x9fb6d6,260,700);
+scene.fog=new THREE.Fog(0x9fb6d6,300,800);
 const camera=new THREE.PerspectiveCamera(62,16/9,0.5,2000);
 const sun=new THREE.DirectionalLight(0xffffff,1.0); sun.position.set(120,180,80); sun.castShadow=true;
-sun.shadow.mapSize.set(2048,2048); const sc=sun.shadow.camera; sc.left=-220;sc.right=220;sc.top=220;sc.bottom=-220;sc.far=600;
+sun.shadow.mapSize.set(2048,2048); const sc=sun.shadow.camera; sc.left=-260;sc.right=260;sc.top=320;sc.bottom=-220;sc.far=700;
 scene.add(sun); scene.add(new THREE.HemisphereLight(0xdfe9ff,0x6b7a4a,0.75));
 const mat=(c,r)=>new THREE.MeshStandardMaterial({color:c,roughness:r==null?0.9:r,metalness:0.05});
 const box=(w,h,d,c,r)=>{const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat(c,r));m.castShadow=true;m.receiveShadow=true;return m;};
-// sol : herbe
-const herbe=new THREE.Mesh(new THREE.PlaneGeometry(1400,1400),mat(0x7a9a52)); herbe.rotation.x=-Math.PI/2; herbe.receiveShadow=true; scene.add(herbe);
-// branche (route) le long de X<0 : chaussee 50 de large centree a x=-41, trottoir 15.9 de x=-15.9 a 0
-const route=new THREE.Mesh(new THREE.PlaneGeometry(50,900),mat(0x3d4047,0.95)); route.rotation.x=-Math.PI/2; route.position.set(-41,0.05,200); route.receiveShadow=true; scene.add(route);
-const trottoir=box(15.9,1.2,900,0xb9b4a6); trottoir.position.set(-7.95,0.6,200); scene.add(trottoir);
-// route du tour le long de Z<0
+const herbe=new THREE.Mesh(new THREE.PlaneGeometry(1600,1600),mat(0x7a9a52)); herbe.rotation.x=-Math.PI/2; herbe.receiveShadow=true; scene.add(herbe);
+const route=new THREE.Mesh(new THREE.PlaneGeometry(50,1000),mat(0x3d4047,0.95)); route.rotation.x=-Math.PI/2; route.position.set(-41,0.05,250); route.receiveShadow=true; scene.add(route);
+const trottoir=box(15.9,1.2,1000,0xb9b4a6); trottoir.position.set(-7.95,0.6,250); scene.add(trottoir);
 const tour=new THREE.Mesh(new THREE.PlaneGeometry(900,50),mat(0x3d4047,0.95)); tour.rotation.x=-Math.PI/2; tour.position.set(200,0.05,-41); tour.receiveShadow=true; scene.add(tour);
 const trottoir2=box(900,1.2,15.9,0xb9b4a6); trottoir2.position.set(200,0.6,-7.95); scene.add(trottoir2);
-// ouverture de l'entree dans le trottoir (rangees 4-5) : on peint une dalle de goudron par-dessus
 const ouverture=box(16,1.3,30,0x33363c); ouverture.position.set(-7.95,0.62,52.5); scene.add(ouverture);
-// plot : goudron rangees 3-6 colonnes 1-11, sortie colonnes 10-11 rangees 1-2
-for(let x=1;x<=11;x++)for(let z=3;z<=6;z++){const d=box(CASE-0.4,0.5,CASE-0.4,0x45484f); const p=monde(x,z,0.25); d.position.copy(p); scene.add(d);}
+// ligne mediane de la branche
+for(let z=-20;z<740;z+=40){const l=box(0.6,0.02,18,0xf2e9c7,1); l.position.set(-41,0.1,z); l.receiveShadow=false; scene.add(l);}
+for(let x=1;x<=11;x++)for(let z=3;z<=6;z++){const d=box(CASE-0.4,0.5,CASE-0.4,0x45484f); d.position.copy(monde(x,z,0.25)); scene.add(d);}
 for(const z of [1,2])for(const x of [10,11]){const d=box(CASE-0.4,0.5,CASE-0.4,0x45484f); d.position.copy(monde(x,z,0.25)); scene.add(d);}
-// station L1 (3x3 cases autour de (7,5)) : socle + portique
 const st=box(44,0.8,44,0x8c9aa6); st.position.copy(monde(7,5,0.4)); scene.add(st);
 const portique=box(44,2,6,0x2f6db5); portique.position.copy(monde(7,5,14)); scene.add(portique);
 for(const dx of [-20,20]){const pied=box(3,14,3,0xdde3e8); const p=monde(7,5,7); pied.position.set(p.x+dx,7,p.z); scene.add(pied);}
-// boutique
 const bout=box(45,14,45,0xe6d8c3); bout.position.copy(monde(14,8,7)); scene.add(bout);
-// joueur (pion) sur le trottoir devant le plot
 const joueur=new THREE.Group(); const jb=box(2,4,1.2,0x2f6db5); jb.position.y=3.6; const jh=new THREE.Mesh(new THREE.SphereGeometry(1,16,12),mat(0xf1c7a0)); jh.position.y=6.4; joueur.add(jb,jh); joueur.position.set(-8,1.2,-20); scene.add(joueur);
-// ------------------------------------------------------------------ pick-up (27 studs)
+// ------------------------------------------------------------------ pick-up (27 studs) : groupe "chassis" (position/cap/derive) > "caisse" (roulis, tangage) > pieces
 const PK=new THREE.Group(); scene.add(PK);
-const L=27.1, W=10.2;
-const chassis=box(W-0.6,2.2,L-1,0x2b2d33); chassis.position.set(0,2.6,0); PK.add(chassis);
-const carrosserie=box(W,3.2,L,0xc8102e,0.55); carrosserie.position.set(0,4.6,0); PK.add(carrosserie);
-const cabine=box(W-0.8,4.4,8.5,0xc8102e,0.55); cabine.position.set(0,8.4,-4.2); PK.add(cabine);
-const vitre=box(W-1.2,3.0,8.9,0x6ea0cc,0.2); vitre.position.set(0,8.9,-4.2); PK.add(vitre);
-const capot=box(W-0.6,1.2,7,0xc8102e,0.55); capot.position.set(0,6.4,-10); PK.add(capot);
-// benne : plancher a y=6.2, flancs jusqu'a 8.4, de z=0.1 a 13.5 (arriere = +Z)
-const plancher=box(W-1.6,0.4,13,0x4a4d55); plancher.position.set(0,6.3,6.8); PK.add(plancher);
-for(const sx of [-1,1]){const fl=box(0.6,2.2,13,0xc8102e,0.55); fl.position.set(sx*(W/2-0.3),7.3,6.8); PK.add(fl);}
-const ridelle=box(W,2.2,0.6,0xc8102e,0.55); ridelle.position.set(0,7.3,13.3); PK.add(ridelle);
-const phares=box(W-2,0.9,0.4,0xfff1b8,0.3); phares.position.set(0,5.4,-L/2-0.1); PK.add(phares);
-const feux=box(W-2,0.8,0.4,0xff3b2e,0.3); feux.position.set(0,6.0,L/2+0.1); PK.add(feux);
-const R=1.95, roues=[];
+const CAISSE=new THREE.Group(); PK.add(CAISSE);
+const L=27.1, W=10.2, R=1.95, H_CG=3.6, DEMI_VOIE=W/2-0.5;
+const chassis=box(W-0.6,2.2,L-1,0x2b2d33); chassis.position.set(0,2.6,0); CAISSE.add(chassis);
+const carrosserie=box(W,3.2,L,0xc8102e,0.55); carrosserie.position.set(0,4.6,0); CAISSE.add(carrosserie);
+const cabine=box(W-0.8,4.4,8.5,0xc8102e,0.55); cabine.position.set(0,8.4,-4.2); CAISSE.add(cabine);
+const vitre=box(W-1.2,3.0,8.9,0x6ea0cc,0.2); vitre.position.set(0,8.9,-4.2); CAISSE.add(vitre);
+const capot=box(W-0.6,1.2,7,0xc8102e,0.55); capot.position.set(0,6.4,-10); CAISSE.add(capot);
+const plancher=box(W-1.6,0.4,13,0x4a4d55); plancher.position.set(0,6.3,6.8); CAISSE.add(plancher);
+for(const sx of [-1,1]){const fl=box(0.6,2.2,13,0xc8102e,0.55); fl.position.set(sx*(W/2-0.3),7.3,6.8); CAISSE.add(fl);}
+const ridelle=box(W,2.2,0.6,0xc8102e,0.55); ridelle.position.set(0,7.3,13.3); CAISSE.add(ridelle);
+const phares=box(W-2,0.9,0.4,0xfff1b8,0.3); phares.position.set(0,5.4,-L/2-0.1); CAISSE.add(phares);
+const feux=box(W-2,0.8,0.4,0xff3b2e,0.3); feux.position.set(0,6.0,L/2+0.1); CAISSE.add(feux);
+const roues=[];
 for(const [sx,sz] of [[-1,-1],[1,-1],[-1,1],[1,1]]){
   const g=new THREE.Group(); const pneu=new THREE.Mesh(new THREE.CylinderGeometry(R,R,1.9,24),mat(0x1a1a1d,0.95)); pneu.rotation.z=Math.PI/2; pneu.castShadow=true;
   const jante=new THREE.Mesh(new THREE.CylinderGeometry(R*0.6,R*0.6,2.0,12),mat(0xc9ccd2,0.4)); jante.rotation.z=Math.PI/2;
-  g.add(pneu,jante); g.position.set(sx*(W/2-0.3),R,sz*8.6); PK.add(g); roues.push(g);
+  g.add(pneu,jante); g.position.set(sx*(W/2-0.3),R,sz*8.6); g.userData.sx=sx; CAISSE.add(g); roues.push(g);
 }
-const BAS=0;  // bas des roues dans le repere du pick-up
-// ------------------------------------------------------------------ ItsCirly dans la benne
-const C=new THREE.Group(); PK.add(C);
+// fumee des pneus (particules simples)
+const fumees=[]; const fumeeGeo=new THREE.SphereGeometry(1,8,6);
+function fumer(pos,n){for(let i=0;i<n;i++){const m=new THREE.Mesh(fumeeGeo,new THREE.MeshStandardMaterial({color:0xe8e8e8,transparent:true,opacity:0.5,roughness:1})); m.position.copy(pos).add(new THREE.Vector3((Math.random()-0.5)*2,0.5,(Math.random()-0.5)*2)); m.userData={t:0,v:new THREE.Vector3((Math.random()-0.5)*4,2+Math.random()*2,(Math.random()-0.5)*4)}; scene.add(m); fumees.push(m);}}
+// ------------------------------------------------------------------ ItsCirly : une masse qui glisse dans la benne
+const C=new THREE.Group(); CAISSE.add(C);
 const tronc=box(2.0,2.6,1.1,0x1f8a4f); tronc.position.set(0,1.3,0);
 const tete=new THREE.Mesh(new THREE.SphereGeometry(0.95,18,14),mat(0xf1c7a0)); tete.position.set(0,3.2,0);
 const casquette=box(2.1,0.5,2.1,0x2b2d33); casquette.position.set(0,3.9,0);
-const jambes=[]; for(const sx of [-0.5,0.5]){const j=box(0.8,0.8,2.6,0x2c3e66); j.position.set(sx,0.4,1.4); C.add(j); jambes.push(j);}  // jambes allongees vers l'arriere (+Z local = vers la ridelle)
-const bras=[]; for(const sx of [-1.3,1.3]){const b=box(0.6,2.2,0.6,0x1f8a4f); b.position.set(sx,1.5,0); b.geometry.translate(0,-1.1,0); b.position.y=2.6; C.add(b); bras.push(b);}
+const jambes=[]; for(const sx of [-0.5,0.5]){const j=box(0.8,0.8,2.6,0x2c3e66); j.position.set(sx,0.4,1.4); C.add(j); jambes.push(j);}
+const bras=[]; for(const sx of [-1.3,1.3]){const b=box(0.6,2.2,0.6,0x1f8a4f); b.geometry.translate(0,-1.1,0); b.position.set(sx,2.6,0); C.add(b); bras.push(b);}
 C.add(tronc,tete,casquette);
-const BENNE={zAvant:0.1+1.2, zArriere:13.5-1.0, y:8.4-0.6};
-// ------------------------------------------------------------------ trajet (points du serveur, type A)
+// limites de la benne (repere caisse) : x lateral, z longitudinal (+Z = ridelle). Position de repos : dos a la cabine, au milieu.
+const BENNE={xMax:W/2-0.3-1.0, zMin:0.1+1.3, zMax:13.3-1.0, y:6.5, repos:{x:0,z:0.1+2.6}, debord:2.4};
+// ------------------------------------------------------------------ trajet (points du serveur, type A) : 9 noeuds de file -> trottoir -> entree -> plot -> parking
 const XQ=-28.4, XTROT=-8, ZE=52.5;
-const pt=(x,z,dx,dz,v,derapage)=>({pos:new THREE.Vector3(x,0.6,z),dir:new THREE.Vector3(dx,0,dz).normalize(),v,derapage:!!derapage});
+const pt=(x,z,dx,dz)=>({pos:new THREE.Vector3(x,0.6,z),dir:new THREE.Vector3(dx,0,dz).normalize()});
 const points=[];
-for(let i=5;i>=1;i--) points.push(pt(XQ, ZE+22+(i-1)*30, 0,-1, i<=2?26:34));
-points.push(pt(XTROT,ZE,1,0,24,true));
-points.push(pt(15,ZE,1,0,20,true));
-const c1=monde(3,4.5,0.6); points.push(pt(c1.x,c1.z,1,0,13,false));
+for(let i=9;i>=1;i--) points.push(pt(XQ, ZE+22+(i-1)*30, 0,-1));
+points.push(pt(XTROT,ZE,1,0)); points.push(pt(15,ZE,1,0));
+const c1=monde(3,4.5,0.6); points.push(pt(c1.x,c1.z,1,0));
 const c2=monde(3.5,6.6,0.6), park=monde(3.5,8.6,0.6); const vf=park.clone().sub(c2).normalize();
-points.push(pt(c2.x,c2.z,vf.x,vf.z,8)); points.push(pt(park.x,park.z,vf.x,vf.z,0));
-// courbe echantillonnee (meme regle que le code : Bezier cubique, poignees = corde/3)
-let chemin=[], longueur=0, sDebut=null, sFin=null, cote=1;
-function construire(){
-  chemin=[]; let s=0; let prev=points[0];
-  chemin.push({pos:prev.pos.clone(),dir:prev.dir.clone(),s:0,v:prev.v,derapage:prev.derapage});
+points.push(pt(c2.x,c2.z,vf.x,vf.z)); points.push(pt(park.x,park.z,vf.x,vf.z));
+const S_VIRAGE_DEBUT=points.slice(0,9).reduce((a,p,i,arr)=>i?a+arr[i-1].pos.distanceTo(p.pos):0,0); // abscisse approximative du trottoir
+let chemin=[], longueur=0;
+(function construire(){
+  let s=0; let prev=points[0];
+  chemin.push({pos:prev.pos.clone(),dir:prev.dir.clone(),s:0,k:0});
   for(let i=1;i<points.length;i++){
     const P1=points[i], p0=prev.pos, p2=P1.pos, k=p2.distanceTo(p0)/3;
     const c1=p0.clone().addScaledVector(prev.dir,k), c2=p2.clone().addScaledVector(P1.dir,-k);
     let dernier=chemin[chemin.length-1].pos;
-    for(let j=1;j<=24;j++){const t=j/24,u=1-t;
+    for(let j=1;j<=30;j++){const t=j/30,u=1-t;
       const p=p0.clone().multiplyScalar(u*u*u).add(c1.clone().multiplyScalar(3*u*u*t)).add(c2.clone().multiplyScalar(3*u*t*t)).add(p2.clone().multiplyScalar(t*t*t));
       const d=p.clone().sub(dernier); s+=d.length();
-      chemin.push({pos:p,dir:d.length()>1e-4?d.normalize():P1.dir.clone(),s,v:P1.v,derapage:P1.derapage}); dernier=p;}
+      chemin.push({pos:p,dir:d.length()>1e-4?d.normalize():P1.dir.clone(),s,k:0}); dernier=p;}
     prev=P1;}
-  longueur=s; sDebut=null;sFin=null;
-  for(const e of chemin){ if(e.derapage){ if(sDebut==null) sDebut=e.s; sFin=e.s; } }
-  let dA=null,dB=null; for(const e of chemin){ if(e.s>=sDebut&&!dA) dA=e.dir; if(e.s<=sFin) dB=e.dir; }
-  const cr=new THREE.Vector3().crossVectors(dA,dB); cote=cr.y>=0?1:-1;
-}
-construire();
+  longueur=s;
+  // courbure signee (rad/stud) : angle entre caps successifs / distance, lissee ; + = virage a gauche
+  for(let i=1;i<chemin.length-1;i++){const a=chemin[i-1],b=chemin[i+1]; const cr=a.dir.x*b.dir.z-a.dir.z*b.dir.x; const ang=Math.asin(Math.max(-1,Math.min(1,-cr))); const ds=b.s-a.s; chemin[i].k=ds>1e-4?ang/ds:0;}
+  for(let pass=0;pass<2;pass++)for(let i=1;i<chemin.length-1;i++) chemin[i].k=(chemin[i-1].k+chemin[i].k+chemin[i+1].k)/3;
+})();
 function echantillon(x){x=Math.max(0,Math.min(longueur,x)); let lo=0,hi=chemin.length-1; while(hi-lo>1){const m=(lo+hi)>>1; if(chemin[m].s<=x) lo=m; else hi=m;}
-  const a=chemin[lo],b=chemin[hi]; const t=b.s>a.s?(x-a.s)/(b.s-a.s):0; const dir=a.dir.clone().lerp(b.dir,t); return {pos:a.pos.clone().lerp(b.pos,t),dir:dir.length()>1e-4?dir.normalize():a.dir.clone(),v:a.v*(1-t)+b.v*t};}
-// ------------------------------------------------------------------ parametres et etat
-const P={derive:32*Math.PI/180, roulis:26*Math.PI/180, glisse:5.5, accel:22, dureeDeuxRoues:0.45, apex:0.45};
+  const a=chemin[lo],b=chemin[hi]; const t=b.s>a.s?(x-a.s)/(b.s-a.s):0; const dir=a.dir.clone().lerp(b.dir,t); return {pos:a.pos.clone().lerp(b.pos,t),dir:dir.length()>1e-4?dir.normalize():a.dir.clone(),k:a.k*(1-t)+b.k*t};}
+// ------------------------------------------------------------------ parametres (= table PICKUP du code)
+const P={vCroisiere:36, aLatCible:30, accel:7.5, frein:20, accroche:100, dureeAccroche:0.20, frottement:0.45, deriveMax:30*Math.PI/180, hCg:H_CG, demiVoie:DEMI_VOIE, restitution:0.28};
+// ------------------------------------------------------------------ etat
 const E={};
-function reset(){E.t=0;E.x=0;E.v=points[0].v;E.derive=0;E.roulis=0;E.vRoulis=0;E.enDerapage=false;E.retombe=false;E.tDeux=null;E.angle=0;E.phase='Descente de la branche';E.fini=false;E.tFin=null;E.sub=null;E.subUntil=0;E.camMode='suivi';E.camPos=null;E.noir=1;E.dialogue=0;E.cfPos=chemin[0].pos.clone();E.cfDir=chemin[0].dir.clone();E.cote=cote;}
+function reset(){Object.assign(E,{t:0,x:0,v:0,aLong:0,aLat:0,derive:0,theta:0,omega:0,susp:0,tangage:0,accroche:null,vireeFaite:false,retombe:false,
+  cir:{x:BENNE.repos.x,z:BENNE.repos.z,vx:0,vz:0,y:0,vy:0},phase:'Départ en haut de la branche',fini:false,tFin:null,sub:null,subUntil:0,noir:1,dialogue:0,ride:0,
+  cfPos:chemin[0].pos.clone(),cfDir:chemin[0].dir.clone(),cote:1,camPos:null,fumeeT:0,maxTheta:0,impact:0}); anim='sit';}
+let anim='sit';
 reset();
-const DIALOGUE=[ // (apres le parking) les lignes du tutoriel
-  {d:0.3,t:"Hey ! Moi c'est ItsCirly. Bienvenue à STATION TYCOON !",anim:'wave',dur:2.6},
-  {d:3.3,t:"Tu vois ce terrain ? C'est le TIEN. Je t'ai préparé une petite station pour démarrer.",anim:'point',dur:3.0},
-  {d:6.8,t:"Je te montre comment ça marche, vite fait : le premier client arrive dans une minute !",anim:'cheer',dur:3.0},
+const RIDE=[ // pendant la descente (il parle, la camera zoome sur lui)
+  {d:1.6,t:"Hey ! Moi c'est ItsCirly. Bienvenue à STATION TYCOON !",anim:'wave',dur:2.8},
+  {d:4.8,t:"Je t'emmène voir TON terrain. Tiens-toi bien, mon chauffeur conduit... sportif.",anim:'point',dur:3.0},
+];
+const DIALOGUE=[ // apres le parking
+  {d:0.6,t:"Tu vois ce terrain ? C'est le TIEN. Je t'ai préparé une petite station pour démarrer.",anim:'point',dur:3.0},
+  {d:4.0,t:"Je te montre comment ça marche, vite fait : le premier client arrive dans une minute !",anim:'cheer',dur:3.0},
 ];
 function dire(txt,dur){E.sub=txt;E.subUntil=E.t+dur;}
-let anim='sit';
-// ------------------------------------------------------------------ pose du pick-up et de Cirly
-function poser(pos,dir,derive,roulis){
-  // repere : regarde dir ; Three regarde -Z par defaut comme Roblox
-  const base=new THREE.Matrix4().lookAt(pos,pos.clone().add(dir),new THREE.Vector3(0,1,0));
-  const q=new THREE.Quaternion().setFromRotationMatrix(base);
-  q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),derive));
-  PK.position.copy(pos); PK.quaternion.copy(q);
-  if(Math.abs(roulis)>1e-3){ // pivot : ligne de contact des roues exterieures (cote exterieur du virage)
-    const demi=W/2-0.4; const axe=new THREE.Vector3(E.cote*demi,BAS,0);
-    const rot=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1),roulis);
-    const off=axe.clone().sub(axe.clone().applyQuaternion(rot));
-    PK.quaternion.multiply(rot); PK.position.add(off.applyQuaternion(q));
+// ------------------------------------------------------------------ dynamique (meme modele que ClientTutoriel.roulerPickup v56)
+function pas(dt){
+  E.t+=dt; E.noir=Math.max(0,E.noir-dt*2);
+  if(E.fini){ poserTout(); dialoguesParking(); return; }
+  // 1) pilote : vitesse cible = croisiere, limitee par la courbure a venir (il freine pour entrer dans le virage a vVirage)
+  // il regarde la courbure sur sa distance de freinage et ralentit pour ne pas depasser aLatCible dans le virage (adherence)
+  const distFrein=E.v*E.v/(2*P.frein)+12; let kMax=0;
+  for(let xx=E.x; xx<Math.min(longueur,E.x+distFrein); xx+=3) kMax=Math.max(kMax,Math.abs(echantillon(xx).k));
+  let vCible=P.vCroisiere;
+  if(kMax>0.004) vCible=Math.min(vCible,Math.sqrt(P.aLatCible/kMax));
+  const reste=longueur-E.x; if(reste<40) vCible=Math.min(vCible,Math.max(1.2,Math.sqrt(2*6*Math.max(0,reste-1.5))));  // freinage final (6 studs/s2)
+  // 2) longitudinal : accelere progressivement (moins de poussee a haute vitesse), freine plus fort
+  let aCmd = vCible>E.v ? P.accel*(1-E.v/(P.vCroisiere+14)) : -P.frein;
+  if(E.accroche!=null&&E.accroche<P.dureeAccroche) aCmd+=16;         // il remet les gaz en sortie
+  aCmd=Math.max(-P.frein,Math.min(P.accel,aCmd));
+  if(Math.abs(vCible-E.v)<aCmd*dt) aCmd=(vCible-E.v)/dt;
+  E.aLong=aCmd; E.v=Math.max(0,E.v+aCmd*dt); E.x+=E.v*dt;
+  const ech=echantillon(E.x); E.cfPos=ech.pos; E.cfDir=ech.dir;
+  // 3) lateral : a_lat = v^2 * courbure (signee, + = gauche)
+  const aLatVirage=E.v*E.v*ech.k;
+  E.cote=aLatVirage>=0?1:-1;   // cote exterieur = oppose au virage... (gauche => exterieur a droite)
+  // derapage : au-dela d'une adherence, le train arriere decroche : survirage proportionnel
+  const glisse=Math.max(0,Math.abs(aLatVirage)-18)/40;
+  const cibleDerive=Math.sign(aLatVirage)*Math.min(P.deriveMax,glisse*P.deriveMax);
+  E.derive+=(cibleDerive-E.derive)*Math.min(1,dt*6);
+  if(Math.abs(aLatVirage)>22&&!E.vireeFaite){E.vireeFaite=true;E.phase='Dérapage';fumer(E.cfPos,0);}
+  // accroche : quand la courbure retombe apres le virage, les pneus reprennent d'un coup : coup de roue lateral (impulsion)
+  if(E.vireeFaite&&E.accroche==null&&Math.abs(ech.k)<0.012&&E.x>S_VIRAGE_DEBUT){E.accroche=0;E.phase='Deux roues (inertie)';anim='cheer';dire("WOOOOH !! Doucement, DOUCEMENT !",1.6);}
+  let aLat=aLatVirage;
+  if(E.accroche!=null){ if(E.accroche<P.dureeAccroche) aLat+= -E.cote*0 + Math.sign(E.derive||1)*P.accroche; E.accroche+=dt; }
+  E.aLat=aLat;
+  // 4) roulis de suspension (toujours) : proportionnel a la force laterale
+  const suspCible=Math.max(-0.12,Math.min(0.12,-aLat*0.0022));
+  E.susp+=(suspCible-E.susp)*Math.min(1,dt*8);
+  E.tangage+=((-E.aLong*0.0045)-E.tangage)*Math.min(1,dt*6);
+  // 5) basculement : la caisse pivote autour des roues exterieures si le moment de la force laterale depasse celui du poids
+  //    theta'' = (|a_lat| * hCg * cos - g * (demiVoie * cos - hCg * sin)) / (hCg^2 + demiVoie^2) ; theta >= 0 (sol)
+  const I=P.hCg*P.hCg+P.demiVoie*P.demiVoie;
+  const th=E.theta, cs=Math.cos(th), sn=Math.sin(th);
+  const alpha=(Math.abs(aLat)*P.hCg*cs - G*(P.demiVoie*cs - P.hCg*sn))/I;
+  if(th>0||alpha>0){ E.omega+=alpha*dt; E.theta+=E.omega*dt;
+    if(E.theta<0){ E.theta=0; if(E.omega<-0.4){E.impact=Math.min(1,-E.omega*0.5); fumer(E.cfPos,4);} E.omega=-E.omega*P.restitution; if(Math.abs(E.omega)<0.25) E.omega=0; }
+  } else { E.omega=0; }
+  E.maxTheta=Math.max(E.maxTheta,E.theta);
+  if(E.accroche!=null&&!E.retombe&&E.maxTheta>0.05&&E.theta<0.02&&E.accroche>0.5){E.retombe=true;E.phase='Retombée';anim='sit';dire("...Ouf. Ça va, ça va. Je gère.",1.8);}
+  if(E.retombe&&E.v<12&&E.phase==='Retombée') E.phase='Vers le parking';
+  // 6) ItsCirly : masse dans la benne, repere caisse. Acceleration ressentie = -(a du vehicule) + gravite selon l'inclinaison ; frottement sec
+  const c=E.cir;
+  // le cote exterieur du virage est -signe(aLat) en X caisse (virage a gauche : force vers la droite = +X)
+  const ext=aLat>=0?1:-1;                                   // cote exterieur du virage en X caisse (virage a gauche : +X)
+  const gx = aLat + ext*G*Math.sin(E.theta);                 // force d'inertie vers l'exterieur + gravite le long du plancher incline (la caisse pivote sur les roues exterieures : le plancher descend vers l'exterieur)
+  const gz = -E.aLong;                                     // acceleration du vehicule : pousse vers la ridelle (+Z) quand ca accelere
+  const dansBenne=Math.abs(c.x)<=BENNE.xMax+0.05&&c.z<=BENNE.zMax+0.05;
+  const muG=P.frottement*G*(dansBenne?1:0.35);
+  let ax=gx, az=gz;
+  const vit=Math.hypot(c.vx,c.vz);
+  if(vit<0.3&&Math.hypot(ax,az)<muG){ax=0;az=0;c.vx=0;c.vz=0;}          // il tient tant que l'acceleration ressentie reste sous l'adherence
+  else { const n=Math.max(1e-3,vit); ax-=muG*c.vx/n; az-=muG*c.vz/n; }
+  c.vx+=ax*dt; c.vz+=az*dt; c.x+=c.vx*dt; c.z+=c.vz*dt;
+  // parois : il peut deborder un peu (a moitie dehors) puis se rattrape : ressort vers l'interieur quand il depasse
+  const dep=x=>Math.max(0,Math.abs(x)-BENNE.xMax);
+  if(Math.abs(c.x)>BENNE.xMax){ const d=dep(c.x)*Math.sign(c.x); if(Math.abs(d)>BENNE.debord){c.x=Math.sign(c.x)*(BENNE.xMax+BENNE.debord);} c.vx+=(-d*60-c.vx*4)*dt; }
+  if(c.z>BENNE.zMax){ const d=c.z-BENNE.zMax; if(d>BENNE.debord) c.z=BENNE.zMax+BENNE.debord; c.vz+=(-d*60-c.vz*4)*dt; }
+  if(c.z<BENNE.zMin){ c.z=BENNE.zMin; c.vz=Math.max(0,c.vz); }
+  // il revient se rasseoir quand tout est calme
+  if(Math.hypot(aLat,E.aLong)<8&&E.theta<0.01){ c.vx+=((BENNE.repos.x-c.x)*5-c.vx*3)*dt; c.vz+=((BENNE.repos.z-c.z)*5-c.vz*3)*dt; }
+  // saut vertical a l'impact
+  if(E.impact>0){c.vy+=E.impact*9;E.impact=0;}
+  c.vy-=G*dt*0.35; c.y=Math.max(0,c.y+c.vy*dt); if(c.y===0&&c.vy<0) c.vy=0;
+  // roues
+  for(const g of roues){ g.rotation.x-=(E.v*dt)/R; }
+  if(E.vireeFaite&&Math.abs(E.derive)>0.15){E.fumeeT+=dt; if(E.fumeeT>0.05){E.fumeeT=0; fumer(E.cfPos.clone().add(E.cfDir.clone().multiplyScalar(-9)),1);} }
+  if(E.x>=longueur-0.05||(reste<2&&E.v<0.3)){E.fini=true;E.tFin=E.t;E.phase='Garé : accueil depuis la benne';E.v=0;E.derive=0;}
+  poserTout();
+  dialoguesRide();
+}
+function poserTout(){
+  const pos=E.cfPos, dir=E.cfDir;
+  const m=new THREE.Matrix4().lookAt(pos,pos.clone().add(dir),new THREE.Vector3(0,1,0));
+  PK.position.copy(pos); PK.quaternion.setFromRotationMatrix(m);
+  PK.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),E.derive));
+  // caisse : roulis de suspension (autour du cg) + tangage + basculement autour de la ligne des roues exterieures
+  CAISSE.position.set(0,0,0); CAISSE.quaternion.identity();
+  const qs=new THREE.Quaternion().setFromEuler(new THREE.Euler(E.tangage,0,E.susp,'XYZ'));
+  CAISSE.quaternion.copy(qs);
+  if(E.theta>0){ const ext=(E.aLat>=0)?1:-1; // virage a gauche : exterieur a droite (+X)
+    const axe=new THREE.Vector3(ext*(W/2-0.3),0,0); const rot=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1),-ext*E.theta);
+    const off=axe.clone().sub(axe.clone().applyQuaternion(rot)); CAISSE.quaternion.premultiply(rot); CAISSE.position.copy(off);
   }
-  for(const g of roues) g.rotation.x=E.angle;
+  // ItsCirly
+  const c=E.cir; C.position.set(c.x,BENNE.y-2.0+c.y-(Math.max(0,c.z-BENNE.zMax)+Math.max(0,Math.abs(c.x)-BENNE.xMax))*1.1,c.z);
+  const over=Math.max(0,c.z-BENNE.zMax)+Math.max(0,Math.abs(c.x)-BENNE.xMax);
+  const penche=-over*0.5-Math.min(0.5,Math.hypot(c.vx,c.vz)*0.04);
+  const lateral=Math.max(-0.9,Math.min(0.9,-c.vx*0.08-(c.x/BENNE.xMax)*0.3*(over>0?1:0)));
+  C.rotation.set(penche,Math.PI,lateral);
+  const lev=Math.min(1,Math.hypot(c.vx,c.vz)*0.12+over*0.5);
+  bras[0].rotation.set(-Math.PI*0.95*lev-(anim==='cheer'?2.6:0),0,-0.4*lev);
+  bras[1].rotation.set(-Math.PI*0.95*lev-(anim==='wave'||anim==='point'?(anim==='point'?1.6:2.4+Math.sin(E.t*9)*0.5):0)-(anim==='cheer'?2.6:0),0,0.4*lev);
+  jambes.forEach(j=>{j.rotation.x=-0.3*lev;});
 }
-function poserCirly(glisse,penche,saut,versJoueur,lateral){
-  const g=Math.max(0,Math.min(1.35,glisse));
-  const z=BENNE.zAvant+1.6+(BENNE.zArriere-BENNE.zAvant-2.6)*g;
-  const chute=Math.max(0,g-1)*2.6;           // au-dela de la ridelle : il bascule par-dessus
-  C.position.set(0,BENNE.y-2.0+saut-chute,z);
-  C.rotation.set(penche,Math.PI,lateral||0);
-  if(versJoueur&&glisse<0.05){ // regarde le joueur (rotation Y seulement)
-    const wp=new THREE.Vector3(); C.getWorldPosition(wp); const cible=joueur.position.clone(); cible.y=wp.y;
-    const m=new THREE.Matrix4().lookAt(wp,cible,new THREE.Vector3(0,1,0)); const qw=new THREE.Quaternion().setFromRotationMatrix(m);
-    const qp=PK.getWorldQuaternion(new THREE.Quaternion()).invert(); C.quaternion.copy(qp.multiply(qw)); }
-  // bras : en l'air quand il glisse fort ; "wave" = un bras ; "point" = un bras tendu devant
-  const lev=Math.max(0,Math.min(1,(glisse-0.25)*2));
-  bras[0].rotation.set(-Math.PI*0.95*lev - (anim==='cheer'?2.6:0), 0, -0.4*lev);
-  bras[1].rotation.set(-Math.PI*0.95*lev - (anim==='wave'||anim==='point'?(anim==='point'?1.6:2.4+Math.sin(E.t*9)*0.5):0) - (anim==='cheer'?2.6:0), 0, 0.4*lev);
-  jambes.forEach((j,i)=>{j.rotation.x=-0.25*lev; j.position.z=1.4+0.6*lev;});
-}
-// ------------------------------------------------------------------ cameras
-let camLibre=false; let orbit={theta:0.9,phi:0.95,r:70,target:new THREE.Vector3(10,4,40),drag:false,lx:0,ly:0};
-function camSuivi(){
-  const pos=E.cfPos, q=PK.quaternion;
-  if(E.phase==='Descente de la branche'){ const off=new THREE.Vector3(12,6,-24).applyQuaternion(q); camera.fov+=(64-camera.fov)*0.1; return {eye:pos.clone().add(off),look:pos.clone().add(new THREE.Vector3(0,3,0))}; }
-  if(E.phase==='Dérapage'||E.phase==='Retombée'){ if(!E.camPos){E.camPos=pos.clone().add(new THREE.Vector3(E.cote*20,5,4).applyQuaternion(q));} camera.fov+=(72-camera.fov)*0.1; return {eye:E.camPos,look:pos.clone().add(new THREE.Vector3(0,3.5,0))}; }
-  // parking : face a la benne, cote joueur
-  const vers=joueur.position.clone().sub(park); vers.y=0; vers.normalize();
-  const eye=park.clone().add(vers.multiplyScalar(16)).add(new THREE.Vector3(0,5.5,0)); camera.fov+=(62-camera.fov)*0.1;
-  const wp=new THREE.Vector3(); C.getWorldPosition(wp);
-  return {eye,look:wp.add(new THREE.Vector3(0,1.2,0))};
+function dialoguesRide(){ const d=RIDE[E.ride]; if(d&&E.t>=d.d){anim=d.anim;dire(d.t,d.dur);E.ride++;} if(E.ride>=RIDE.length&&E.sub&&E.t>E.subUntil&&!E.vireeFaite) anim='sit'; }
+function dialoguesParking(){ const tf=E.t-E.tFin; const d=DIALOGUE[E.dialogue]; if(d&&tf>=d.d){anim=d.anim;dire(d.t,d.dur);E.dialogue++;} if(E.dialogue>=DIALOGUE.length&&tf>DIALOGUE[DIALOGUE.length-1].d+DIALOGUE[DIALOGUE.length-1].dur+0.6) anim='sit'; }
+// ------------------------------------------------------------------ cameras : 1) 3/4 vue de haut (on voit ItsCirly dans la benne) 2) zoom sur lui pendant qu'il parle 3) dezoom avant le virage, plan exterieur bas pendant le coup de roue 4) parking
+let camLibre=false; const orbit={theta:0.9,phi:0.95,r:70,target:new THREE.Vector3(10,4,40),drag:false,lx:0,ly:0};
+function planTuto(){
+  const pos=E.cfPos, q=PK.quaternion; const wp=new THREE.Vector3(); C.getWorldPosition(wp);
+  const sVirage=S_VIRAGE_DEBUT;
+  if(E.fini){ const vers=joueur.position.clone().sub(park); vers.y=0; vers.normalize(); return {eye:park.clone().add(vers.multiplyScalar(16)).add(new THREE.Vector3(0,5.5,0)),look:wp.add(new THREE.Vector3(0,1.2,0)),fov:62,k:4}; }
+  if(E.accroche!=null||E.vireeFaite){ if(!E.camPos){E.camPos=pos.clone().add(new THREE.Vector3(E.cote*22,5,2).applyQuaternion(q));} return {eye:E.camPos,look:pos.clone().add(new THREE.Vector3(0,3.5,0)),fov:70,k:10}; }
+  const avantVirage=sVirage-E.x;                // studs restant avant le trottoir
+  if(E.t<1.4||avantVirage<55){                 // 1 et 3 : trois-quarts vue de haut, derriere-dessus, qui montre la benne
+    return {eye:pos.clone().add(new THREE.Vector3(14,22,26).applyQuaternion(q)),look:pos.clone().add(new THREE.Vector3(0,4,2).applyQuaternion(q)),fov:58,k:3};
+  }
+  // 2 : zoom sur ItsCirly qui parle (trois-quarts arriere, serre)
+  return {eye:wp.clone().add(new THREE.Vector3(7,4.5,9).applyQuaternion(q)),look:wp.clone().add(new THREE.Vector3(0,1.5,0)),fov:40,k:2.5};
 }
 let camEye=new THREE.Vector3(), camLook=new THREE.Vector3(), camInit=false;
 function majCamera(dt){
-  if(camLibre){ const t=orbit.target; camera.position.set(t.x+orbit.r*Math.sin(orbit.phi)*Math.cos(orbit.theta), t.y+orbit.r*Math.cos(orbit.phi), t.z+orbit.r*Math.sin(orbit.phi)*Math.sin(orbit.theta)); camera.lookAt(t); camera.fov+=(62-camera.fov)*0.1; camera.updateProjectionMatrix(); return; }
-  const c=camSuivi(); const k=camInit?Math.min(1,dt*9):1; camInit=true;
-  camEye.lerp(c.eye,k); camLook.lerp(c.look,k); camera.position.copy(camEye); camera.lookAt(camLook); camera.updateProjectionMatrix();
+  if(camLibre){ const t=orbit.target.copy(E.cfPos).add(new THREE.Vector3(0,4,0)); camera.position.set(t.x+orbit.r*Math.sin(orbit.phi)*Math.cos(orbit.theta), t.y+orbit.r*Math.cos(orbit.phi), t.z+orbit.r*Math.sin(orbit.phi)*Math.sin(orbit.theta)); camera.lookAt(t); camera.fov+=(62-camera.fov)*0.1; camera.updateProjectionMatrix(); return; }
+  const c=planTuto(); const k=camInit?Math.min(1,dt*c.k):1; camInit=true;
+  camEye.lerp(c.eye,k); camLook.lerp(c.look,k); camera.position.copy(camEye); camera.lookAt(camLook); camera.fov+=(c.fov-camera.fov)*Math.min(1,dt*3); camera.updateProjectionMatrix();
 }
-// ------------------------------------------------------------------ boucle (meme logique que roulerPickup)
+// ------------------------------------------------------------------ boucle
 let speed=1, paused=false, last=performance.now();
-const elPhase=document.getElementById('phase'), elSub=document.getElementById('sub'), elChrono=document.getElementById('chrono');
-const noir=document.createElement('div'); noir.style.cssText='position:absolute;inset:0;background:#000;pointer-events:none;transition:opacity .5s'; wrap.appendChild(noir);
-function pas(dt){
-  E.t+=dt; E.noir=Math.max(0,E.noir-dt*2); noir.style.opacity=E.noir;
-  if(!E.fini){
-    const ech6=echantillon(E.x+6); let vCible=ech6.v;
-    if(vCible<0.5&&longueur-E.x<18) vCible=Math.max(1.5,(longueur-E.x)*0.9);
-    const dv=vCible-E.v; E.v+=Math.max(-P.accel*1.8*dt,Math.min(P.accel*dt,dv)); E.x+=E.v*dt;
-    const ech=echantillon(E.x); E.cfPos=ech.pos; E.cfDir=ech.dir;
-    const dansZone=sDebut!=null&&E.x>=sDebut&&E.x<=sFin;
-    if(dansZone&&!E.enDerapage){E.enDerapage=true;E.phase='Dérapage';anim='cheer';dire("WOOOOH !! Doucement, DOUCEMENT !",1.6);}
-    // survirage pendant toute la glissade ; DEUX ROUES = une impulsion breve au sommet du virage (apex), puis retombee seche
-    const apex=sDebut!=null?sDebut+(sFin-sDebut)*P.apex:null;
-    if(apex!=null&&E.tDeux==null&&E.x>=apex) E.tDeux=0;
-    const surDeuxRoues=E.tDeux!=null&&E.tDeux<P.dureeDeuxRoues;
-    if(E.tDeux!=null) E.tDeux+=dt;
-    const cibleDerive=dansZone?E.cote*P.derive:0, cibleRoulis=surDeuxRoues?-E.cote*P.roulis:0;
-    E.derive+=(cibleDerive-E.derive)*Math.min(1,dt*(dansZone?6:4));
-    if(surDeuxRoues){E.roulis+=(cibleRoulis-E.roulis)*Math.min(1,dt*16);E.vRoulis=0;}
-    else { const acc=-E.roulis*260-E.vRoulis*13; E.vRoulis+=acc*dt; E.roulis+=E.vRoulis*dt;
-      if(E.tDeux!=null&&!E.retombe&&E.tDeux>P.dureeDeuxRoues&&Math.abs(E.roulis)<P.roulis*0.3){E.retombe=true;E.phase='Retombée';anim='sit';dire("...Ouf. Ça va, ça va. Je gère.",1.8);} }
-    E.angle-=(E.v*dt)/R;
-    poser(E.cfPos,E.cfDir,E.derive,E.roulis);
-    const r=Math.abs(E.roulis)/P.roulis;
-    const saut=(E.tDeux!=null&&!E.retombe)?Math.min(1.4,Math.abs(E.vRoulis)*0.15):0;
-    // a moitie dehors : il depasse la ridelle (glisse > 1), bascule en arriere par-dessus, penche aussi vers l'exterieur
-    poserCirly(Math.min(1.35,r*1.7*(P.glisse/5.5)),-r*1.25,saut,false,E.roulis*0.9);
-    if(E.x>=longueur-0.05){E.fini=true;E.tFin=E.t;E.phase='Garé : accueil depuis la benne';E.derive=0;E.roulis=0;poser(park.clone().setY(0.6),vf,0,0);}
-    else if(E.retombe&&E.v<12&&E.phase==='Retombée'){E.phase='Vers le parking';}
-  } else {
-    poserCirly(0,0,0,true,0);
-    const tf=E.t-E.tFin; const d=DIALOGUE[E.dialogue];
-    if(d&&tf>=d.d){anim=d.anim;dire(d.t,d.dur);E.dialogue++;}
-    if(E.dialogue>=DIALOGUE.length&&tf>DIALOGUE[DIALOGUE.length-1].d+DIALOGUE[DIALOGUE.length-1].dur+0.6){anim='sit';}
-  }
-  elPhase.textContent=E.phase; elChrono.textContent=E.t.toFixed(1).replace('.',',')+' s';
-  if(E.sub&&E.t<E.subUntil){elSub.textContent=E.sub;elSub.classList.add('on');} else elSub.classList.remove('on');
-}
+const elPhase=document.getElementById('phase'), elSub=document.getElementById('sub'), elTele=document.getElementById('tele');
+const noir=document.createElement('div'); noir.style.cssText='position:absolute;inset:0;background:#000;pointer-events:none;transition:opacity .5s;z-index:1'; wrap.appendChild(noir);
 function frame(now){
   const dtReel=Math.min(0.05,(now-last)/1000); last=now;
-  if(!paused) pas(dtReel*speed);
-  majCamera(dtReel);
+  if(!paused){ const n=Math.max(1,Math.ceil(dtReel*speed/0.01)); for(let i=0;i<n;i++) pas(dtReel*speed/n); }
+  for(let i=fumees.length-1;i>=0;i--){const f=fumees[i]; f.userData.t+=dtReel; f.position.addScaledVector(f.userData.v,dtReel); f.scale.setScalar(1+f.userData.t*2.5); f.material.opacity=Math.max(0,0.5-f.userData.t*0.45); if(f.userData.t>1.2){scene.remove(f);fumees.splice(i,1);}}
+  majCamera(dtReel); noir.style.opacity=E.noir;
+  elPhase.textContent=E.phase;
+  elTele.innerHTML=`t ${E.t.toFixed(1).replace('.',',')} s<br>v ${E.v.toFixed(0)} studs/s (${(E.v/4.59*3.6).toFixed(0)} km/h)<br>a lat ${Math.abs(E.aLat/G).toFixed(2)} g · roulis ${(E.theta*180/Math.PI).toFixed(0)}°`;
+  if(E.sub&&E.t<E.subUntil){elSub.textContent=E.sub;elSub.classList.add('on');} else elSub.classList.remove('on');
   renderer.render(scene,camera); requestAnimationFrame(frame);
 }
 function taille(){const w=wrap.clientWidth,h=wrap.clientHeight; renderer.setSize(w,h,false); camera.aspect=w/h; camera.updateProjectionMatrix();}
-window.addEventListener('resize',taille); taille();
-poser(chemin[0].pos,chemin[0].dir,0,0); poserCirly(0,0,0,false,0);
-requestAnimationFrame(frame);
+window.addEventListener('resize',taille); taille(); poserTout(); requestAnimationFrame(frame);
 // ------------------------------------------------------------------ commandes
 const $=id=>document.getElementById(id);
-$('play').onclick=()=>{reset();E.noir=1;paused=false;camInit=false;};
+$('play').onclick=()=>{reset();paused=false;camInit=false;};
 $('pause').onclick=()=>{paused=!paused;$('pause').textContent=paused?'Reprendre':'Pause';};
 $('cam').onclick=()=>{camLibre=!camLibre;$('cam').textContent=camLibre?'Caméra : libre (orbite)':'Caméra : plans du tutoriel';camInit=false;};
 $('speed').oninput=e=>{speed=+e.target.value;$('v_speed').textContent=speed.toFixed(2).replace(/\.?0+$/,'').replace('.',',')+'×';};
-$('derive').oninput=e=>{P.derive=+e.target.value*Math.PI/180;$('v_derive').textContent=e.target.value+'°';};
-$('roulis').oninput=e=>{P.roulis=+e.target.value*Math.PI/180;$('v_roulis').textContent=e.target.value+'°';};
-$('duree').oninput=e=>{P.dureeDeuxRoues=+e.target.value;$('v_duree').textContent=(+e.target.value).toFixed(2).replace('.',',')+' s';};
-$('glisse').oninput=e=>{P.glisse=+e.target.value;$('v_glisse').textContent=(+e.target.value).toFixed(1).replace('.',',')+' studs';};
-// orbite libre
+$('vmax').oninput=e=>{P.vCroisiere=+e.target.value;$('v_vmax').textContent=e.target.value+' studs/s';};
+$('alat').oninput=e=>{P.aLatCible=+e.target.value;$('v_alat').textContent=(P.aLatCible/G).toFixed(2).replace('.',',')+' g';};
+$('dur').oninput=e=>{P.dureeAccroche=+e.target.value;$('v_dur').textContent=(+e.target.value).toFixed(2).replace('.',',')+' s';};
+$('jolt').oninput=e=>{P.accroche=+e.target.value;$('v_jolt').textContent=e.target.value+' studs/s² ('+(P.accroche/G).toFixed(1).replace('.',',')+' g)';};
+$('mu').oninput=e=>{P.frottement=+e.target.value;$('v_mu').textContent=(+e.target.value).toFixed(2).replace('.',',');};
 const cv=renderer.domElement;
 cv.addEventListener('pointerdown',e=>{if(!camLibre)return;orbit.drag=true;orbit.lx=e.clientX;orbit.ly=e.clientY;cv.setPointerCapture(e.pointerId);});
 cv.addEventListener('pointermove',e=>{if(!orbit.drag)return;orbit.theta+=(e.clientX-orbit.lx)*0.006;orbit.phi=Math.max(0.15,Math.min(1.45,orbit.phi-(e.clientY-orbit.ly)*0.006));orbit.lx=e.clientX;orbit.ly=e.clientY;});
