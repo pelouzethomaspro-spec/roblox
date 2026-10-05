@@ -144,3 +144,12 @@ simulé : Argent 20 min, Or 1 h 15, Platine 3 h, Diamant 7 h, Maître 19 h, Lég
   coller l'identifiant. Question : `Follie`, c'est quelle voiture dans la vraie vie ? (j'ai mis « V12 hypercar, à confirmer »).
 * Le fichier « avec le nom des voitures » dont tu parles est sur ton bureau : je ne l'ai pas. Si les noms diffèrent de ceux
   du catalogue (`M4, ClassG, Urus, GT3, F448, Follie`), envoie-le-moi et j'aligne la table.
+
+### Roues « mal fixées au châssis » (vidéo du 05/10 au soir)
+* **Cause** : la carrosserie suivait le Root par soudure, donc déplacée par le moteur physique une image après, alors que les
+  roues étaient posées directement par le script dans la même image. Résultat : les roues avançaient et reculaient de 1 à
+  2 studs par rapport aux passages de roue.
+* **Correction** (`TWEENController`) : toutes les pièces de la voiture, carrosserie comprise, sont ancrées côté client et
+  posées explicitement par rapport au Root dans la même image. Au passage, l'axe de rotation de chaque roue passe par le
+  centre du pneu (la plus grande pièce) et non par la moyenne des pièces : un enjoliveur décalé faisait tourner la roue
+  autour d'un point excentré.

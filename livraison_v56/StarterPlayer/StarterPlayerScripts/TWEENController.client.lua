@@ -167,17 +167,34 @@ local function preparerVoiture(car, root)
 		end
 	end
 	V.derive, V.roulis = 0, 0
+	local estDansRoue = {}
 	for _, cle in ipairs(ordre) do
 		local parts = groupes[cle]
-		local somme, rayon = Vector3.zero, 0
-		for _, p in ipairs(parts) do somme += p.Position; rayon = math.max(rayon, math.max(p.Size.X, p.Size.Y, p.Size.Z) / 2) end
-		local centre = rootCF:PointToObjectSpace(somme / #parts)
+		-- v56 : l'axe de rotation passe par le centre du PNEU (la plus grande piece du groupe), pas par la moyenne des pieces :
+		-- un enjoliveur decale faisait tourner la roue autour d'un point excentre (roue qui "danse")
+		local plusGrande, rayon = nil, 0
+		for _, p in ipairs(parts) do
+			local r = math.max(p.Size.X, p.Size.Y, p.Size.Z) / 2
+			if r > rayon then rayon = r; plusGrande = p end
+		end
+		local centre = rootCF:PointToObjectSpace((plusGrande or parts[1]).Position)
 		local roue = { parts = {}, centre = centre, rayon = math.max(rayon, 0.4) }
 		for _, p in ipairs(parts) do
 			p.Anchored = true                                 -- local : la roue n'est plus tiree par la soudure, on la pose nous-memes
+			estDansRoue[p] = true
 			table.insert(roue.parts, { part = p, offset = rootCF:ToObjectSpace(p.CFrame) })
 		end
 		table.insert(V.roues, roue)
+	end
+	-- v56 : la CARROSSERIE aussi est posee par le script, dans la MEME image que les roues. Avant, elle suivait le Root par
+	-- soudure (assemblage deplace par le moteur physique, une image apres), et les roues, posees directement, avancaient et
+	-- reculaient de 1 a 2 studs par rapport aux passages de roue ("roues mal fixees au chassis", video de Thomas du 05/10).
+	V.corps = {}
+	for _, p in ipairs(car:GetDescendants()) do
+		if p:IsA("BasePart") and p ~= root and not estDansRoue[p] then
+			p.Anchored = true
+			table.insert(V.corps, { part = p, offset = rootCF:ToObjectSpace(p.CFrame) })
+		end
 	end
 	Voitures[car] = V
 	-- v56 : ROUES FANTOMES : les roues sont ancrees localement et ne sont posees que pendant un trajet. Quand le serveur
@@ -186,6 +203,7 @@ local function preparerVoiture(car, root)
 	root:GetPropertyChangedSignal("CFrame"):Connect(function()
 		if not V.enTrajet and Voitures[car] == V then poserRoues(V) end
 	end)
+	poserRoues(V)
 	car.AncestryChanged:Connect(function(_, parent)
 		if parent == nil then
 			if V.son then V.son:Destroy() end
@@ -196,9 +214,12 @@ local function preparerVoiture(car, root)
 	return V
 end
 
--- pose les roues par rapport au Root, tournees de V.angle autour de l'axe lateral (X du Root)
+-- pose la carrosserie puis les roues par rapport au Root (roues tournees de V.angle autour de l'axe lateral, X du Root)
 poserRoues = function(V)
 	local rootCF = V.root.CFrame
+	for _, e in ipairs(V.corps or {}) do
+		if e.part.Parent then e.part.CFrame = rootCF * e.offset end
+	end
 	for _, roue in ipairs(V.roues) do
 		local rot = CFrame.new(roue.centre) * CFrame.Angles(V.angle, 0, 0) * CFrame.new(-roue.centre)
 		for _, e in ipairs(roue.parts) do
@@ -208,7 +229,8 @@ poserRoues = function(V)
 end
 
 local function avancerRoues(V, distance)
-	if #V.roues == 0 or distance <= 0 then return end
+	if distance <= 0 then poserRoues(V) return end            -- v56 : la carrosserie est posee meme a l'arret (derive / roulis)
+	if #V.roues == 0 then poserRoues(V) return end
 	-- en roulant vers l'avant (-Z du Root), le dessus de la roue part vers l'avant : rotation negative autour de +X
 	V.angle -= distance / V.roues[1].rayon
 	if V.angle < -math.pi * 2 then V.angle += math.pi * 2 end
