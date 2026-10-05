@@ -339,7 +339,6 @@ end
 ------------------------------------------------------------------
 function Chaine:debut(cy)
 	self:brancherEchelle()                      -- v56
-	if not (self.dossier and self.dossier.Parent) then self.dossier = Instance.new("Folder"); self.dossier.Name = "ChaineProduction_Voitures"; self.dossier.Parent = workspace end
 	local n = cy.n
 	for id, v in pairs(self.voitures) do
 		if id < n - 6 or id > n then self:detruireVoiture(v); self.voitures[id] = nil end
@@ -436,7 +435,7 @@ function Chaine:arreter()
 	for _, P in pairs(self.pistolets) do Effets.activer(P.jets, false); Sons.jouer(P.son, false) end
 	self.lumScan.Enabled = false; self.lumOk.Enabled = false
 	if self.connEchelle then self.connEchelle:Disconnect(); self.connEchelle = nil end
-	if self.dossier then self.dossier:Destroy(); self.dossier = nil end       -- v56 : plus de dossier de palettes orphelin a chaque reveil
+	-- (le dossier ChaineProduction_Voitures garde les palettes creees au montage : il n'est PAS detruit ici)
 	self.n = nil
 end
 
