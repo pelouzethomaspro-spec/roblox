@@ -7,7 +7,7 @@ Rien n'a été touché sur ton PC ni dans Studio. Rien n'est publié.
 
 1. **Ouvre `Station_Tycoon_v56_pre.rbxl`** (celui que tu m'as envoyé : c'est la v55 + tes 9 panneaux pub importés, rien d'autre).
    Enregistre-le tout de suite **sous `Station_Tycoon_v56.rbxl`** (Fichier → Enregistrer sous) pour garder le `_pre` intact.
-2. **Colle les 28 scripts du dossier `livraison_v56/`** : pour chaque fichier, ouvre le script au même chemin dans l'Explorer,
+2. **Colle les 30 scripts du dossier `livraison_v56/`** : pour chaque fichier, ouvre le script au même chemin dans l'Explorer,
    Ctrl+A, colle. Les deux NOUVEAUX scripts à créer (clic droit sur le dossier → Insérer un objet → ModuleScript, puis
    renommer et coller) :
    * `ServerScriptService/Notes` (ModuleScript) — notes de la station, agent d'entretien.
@@ -92,7 +92,7 @@ simulé : Argent 20 min, Or 1 h 15, Platine 3 h, Diamant 7 h, Maître 19 h, Lég
   réutilisé là où il existe).
 
 ## 4. Fichiers
-* `livraison_v56/` : les 28 scripts à coller (26 modifiés + `Notes` + `Boutique`), rangés comme dans l'Explorer.
+* `livraison_v56/` : les 30 scripts à coller (28 modifiés + `Notes` + `Boutique`), rangés comme dans l'Explorer.
 * `1_scripts_v56/` : le jeu complet (99 + 2 scripts) tel qu'il doit être après collage.
 * `2_documents/ECONOMIE_v56.md`, `2_documents/outils_studio/Appliquer_IDs_v24.lua`, `3_pipeline/economie/`.
 * `places/Station_Tycoon_v56_pre.rbxl` : ton fichier, inchangé.
@@ -107,3 +107,33 @@ simulé : Argent 20 min, Or 1 h 15, Platine 3 h, Diamant 7 h, Maître 19 h, Lég
 * Pièces mobiles des stations ×1,5 : un relecteur soupçonne que certaines translations (axe des roues, rack de pneus E5)
   ne sont pas multipliées par 1,5 (`Stations/Voiture`, `E5`). Je n'ai rien changé : à regarder en jeu, dis-moi si les roues
   des voitures dans les stations « orbitent ».
+
+## 6. Ajout du matin (demande du 05/10) : pick-up F-150 dans l'intro, bruits de moteur par modèle
+
+### Intro du tutoriel : ItsCirly arrive dans son F-150
+* **À faire dans Studio** : ouvre `F150_5_peintures.rbxl`, copie les 5 modèles `F150_*` (ou un seul), colle-les dans
+  `ReplicatedStorage` du jeu dans un **Folder nommé `F150_Peintures`** (une couleur au hasard à chaque intro), ou un seul
+  Model renommé **`F150`**. Rien d'autre : le code met le pick-up à l'échelle (27 studs, comme une vraie F-150 à 4,59 studs/m),
+  les 12 pièces `Wheel_*` tournent, la benne est repérée sur les pièces `windo`/`gris`.
+* **Ce que ça fait** (`Tutoriel.lua` calcule le trajet, `ClientTutoriel` l'anime, tout en local) : noir → le pick-up descend
+  la branche (caméra ¾ avant), ItsCirly assis décontracté dans la benne, dos à la cabine. Au virage dans ton entrée :
+  survirage + roulis sur deux roues (caméra basse côté extérieur), ItsCirly glisse vers la ridelle, bras en l'air
+  (« WOOOOH !! Doucement, DOUCEMENT ! »), le pick-up retombe sur ses quatre roues avec un rebond, il se rassoit
+  (« ...Ouf. Ça va, ça va. Je gère. »), puis il va se garer sur l'herbe (colonnes 3-4, rangée 8) et te fait l'accueil depuis
+  la benne. Il y reste pendant la première voiture (« ...Moi je bouge pas de ma benne. C'est plus classe. ») et descend pour
+  l'étape du lavage, comme avant. Sans modèle F150 dans la place : ancienne intro (sur le toit de la Clio).
+* Réglages dans `ClientTutoriel` (table `PICKUP`) : angle de dérive 32°, roulis 24°, glissement 5,5 studs, accélération.
+  Le trajet et le parking sont dans `Tutoriel.lua` (bloc « pickup »).
+
+### Bruits de moteur par modèle (à partir d'Épique)
+* Système codé : `Catalogue/Car.Sons` (un `Ralenti` en boucle + une `Acceleration` par modèle : M4, ClassG, Urus, GT3, F448,
+  Follie, et le F150), `TWEENController` joue le ralenti du modèle au lieu du kart générique dès qu'un identifiant est rempli,
+  et `CarAmbiance` fait maintenant **filer la voiture achetée en une seule courbe continue** : dérapage à la sortie du
+  rond-point (54 studs/s, fumée, roulis) puis avenue à 42, avec l'attribut `Rugissement` → le son d'accélération part.
+* **Les sons eux-mêmes** : je ne peux pas récupérer d'audio depuis cette session (la boutique Roblox se consulte dans Studio,
+  l'import passe par ton compte, et les enregistrements de vraies voitures pris sur YouTube ne passent pas la modération).
+  Tout est prêt pour que ce soit une affaire de 15 minutes : **`2_documents/SONS_MOTEURS.md`** donne, pour chaque modèle, la
+  vraie voiture et son moteur, le caractère du son à chercher, les mots-clés à taper dans le Creator Store, et la ligne où
+  coller l'identifiant. Question : `Follie`, c'est quelle voiture dans la vraie vie ? (j'ai mis « V12 hypercar, à confirmer »).
+* Le fichier « avec le nom des voitures » dont tu parles est sur ton bureau : je ne l'ai pas. Si les noms diffèrent de ceux
+  du catalogue (`M4, ClassG, Urus, GT3, F448, Follie`), envoie-le-moi et j'aligne la table.

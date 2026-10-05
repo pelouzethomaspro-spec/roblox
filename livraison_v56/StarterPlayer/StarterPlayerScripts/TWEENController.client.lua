@@ -30,6 +30,15 @@ local SON_MOTEUR = {
 	porteeMax = 180,              -- distance au-dela de laquelle on n'entend plus rien
 }
 local VITESSE_CROISIERE = 32      -- studs/s : vitesse des trajets calcules par le serveur (CarManager.VITESSE)
+-- v56 : sons PAR MODELE a partir d'Epique (Catalogue/Car.Sons : Ralenti en boucle, Acceleration une fois au "Rugissement")
+local CarCat = nil
+pcall(function() CarCat = require(ReplicatedStorage:WaitForChild("Catalogue", 10):WaitForChild("Car", 10)) end)
+local function sonsDe(car)
+	if not (CarCat and CarCat.SonDe) then return nil end
+	local nom = car:GetAttribute("Name") or car:GetAttribute("Modele") or car.Name
+	local ok, S = pcall(CarCat.SonDe, nom)
+	return ok and S or nil
+end
 
 -- ======================================================================================================================
 -- PNJ (inchange) : tween lineaire + animation de marche
@@ -143,7 +152,7 @@ local poserRoues                     -- (definie plus bas ; declaree ici pour pr
 local function preparerVoiture(car, root)
 	local V = Voitures[car]
 	if V and V.root == root then return V end
-	V = { root = root, roues = {}, angle = 0, vitesse = 0, enTrajet = false }
+	V = { root = root, car = car, roues = {}, angle = 0, vitesse = 0, enTrajet = false }
 	local groupes, ordre = groupesRoues(car, root)
 	if #ordre == 0 then groupes, ordre = rouesParGeometrie(car, root) end
 	local rootCF = root.CFrame
@@ -211,10 +220,19 @@ local function moteur(V)
 	if V.son and V.son.Parent then return V.son end
 	local s = Instance.new("Sound")
 	s.Name = "Moteur"
-	s.SoundId = SON_MOTEUR.id
+	-- v56 : son de ralenti propre au modele (Epique et plus) si son identifiant est renseigne, sinon le generique
+	local propre = V.car and sonsDe(V.car)
+	V.sons = propre
+	if propre and propre.Ralenti then
+		s.SoundId = propre.Ralenti
+		V.hauteurArret, V.hauteurRoute = propre.Hauteur, propre.Hauteur * 1.45
+	else
+		s.SoundId = SON_MOTEUR.id
+		V.hauteurArret, V.hauteurRoute = SON_MOTEUR.hauteurArret, SON_MOTEUR.hauteurRoute
+	end
 	s.Looped = true
 	s.Volume = SON_MOTEUR.volume * 0.5
-	s.PlaybackSpeed = SON_MOTEUR.hauteurArret
+	s.PlaybackSpeed = V.hauteurArret
 	s.RollOffMode = Enum.RollOffMode.InverseTapered
 	s.RollOffMinDistance = SON_MOTEUR.porteeMin
 	s.RollOffMaxDistance = SON_MOTEUR.porteeMax
@@ -231,7 +249,8 @@ RunService.Heartbeat:Connect(function(dt)
 		local s = V.son
 		if s and s.Parent then
 			local cible = V.enTrajet and math.clamp(V.vitesse / VITESSE_CROISIERE, 0, 1.6) or 0
-			local hauteur = SON_MOTEUR.hauteurArret + (SON_MOTEUR.hauteurRoute - SON_MOTEUR.hauteurArret) * cible
+			local hA, hR = V.hauteurArret or SON_MOTEUR.hauteurArret, V.hauteurRoute or SON_MOTEUR.hauteurRoute
+			local hauteur = hA + (hR - hA) * cible
 			local volume = SON_MOTEUR.volume * (0.5 + 0.5 * math.min(cible, 1))
 			s.PlaybackSpeed += (hauteur - s.PlaybackSpeed) * k
 			s.Volume += (volume - s.Volume) * k
@@ -314,9 +333,24 @@ local function arreterTrajet(V)
 	V.trajet = nil
 end
 
+-- v56 : RUGISSEMENT : la voiture achetee au centre file vers le plot (CarAmbiance pose l'attribut "Rugissement" le temps du
+-- trajet) : son d'acceleration du modele, une fois, par-dessus le ralenti
+local function rugir(V)
+	local car = V.car
+	if not (car and car:GetAttribute("Rugissement") == true) then return end
+	if V.rugit and V.rugit.Parent then return end
+	local S = V.sons or (car and sonsDe(car))
+	if not (S and S.Acceleration) then return end
+	local s = Instance.new("Sound"); s.Name = "Rugissement"; s.SoundId = S.Acceleration; s.Volume = S.Volume or 0.8
+	s.PlaybackSpeed = 1; s.RollOffMode = Enum.RollOffMode.InverseTapered; s.RollOffMinDistance = 30; s.RollOffMaxDistance = 320
+	s.Parent = V.root; s:Play(); V.rugit = s
+	s.Ended:Once(function() if V.rugit == s then V.rugit = nil end; s:Destroy() end)
+end
+
 local function jouerTrajet(car, root, V, segs, etatFinal)
 	arreterTrajet(V)
 	if V.tween then V.tween:Cancel(); V.tween = nil end
+	rugir(V)
 	-- geometrie de chaque segment depuis la position courante
 	local prevCF = root.CFrame
 	local liste = {}

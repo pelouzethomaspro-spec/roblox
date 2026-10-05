@@ -28,6 +28,10 @@ local MAX_PAR_USINE = 4                       -- garde-fou : jamais plus de N vo
 local DEMI_MAP = 1349                         -- au-dela, la voiture est hors map : on la supprime
 
 local PRIX_BASE = 150                         -- prix d'achat = PRIX_BASE x Mult de la rarete (Common 150 $ ... Divine 3750 $)
+-- v56 : la voiture ACHETEE file vers le plot de l'acheteur : grosse acceleration + DERAPAGE a la sortie du rond-point
+-- (etat 4 des 3 premiers noeuds), attribut "Rugissement" lu par TWEENController (son d'acceleration du modele, Catalogue/Car.Sons)
+local VITESSE_ACHAT_SORTIE = 54              -- studs/s a la sortie de l'anneau
+local VITESSE_ACHAT_ROUTE = 42               -- studs/s sur l'avenue jusqu'au plot
 
 local CarManager = require(ServerScriptService:WaitForChild("CarManager"))
 local PlayerData = require(ServerScriptService:WaitForChild("PlayerData"))
@@ -133,10 +137,21 @@ local function trajet(voiture, route, nomUsine, etat)
 				-- bifurcation : on est au point de sortie de l'anneau du trajet d'achat
 				voiture:SetAttribute("SurAnneau", false)
 				local T = etat.achat.trajet
+				local etapes = {}
 				for j = 2, #T do
-					if not voiture.Parent then return end
-					CarManager.AnimationNodeCar(voiture, cframeNoeud(T[j]), j == #T)
+					table.insert(etapes, { cf = cframeNoeud(T[j]), vitesse = (j <= 3) and VITESSE_ACHAT_SORTIE or VITESSE_ACHAT_ROUTE, etat = (j <= 3) and 4 or 0 })
 				end
+				voiture:SetAttribute("Rugissement", true)
+				if #etapes > 0 and CarManager.AnimationTrajetCar then
+					CarManager.AnimationTrajetCar(voiture, etapes, VITESSE_ACHAT_ROUTE, true, false)
+				else
+					for j = 2, #T do
+						if not voiture.Parent then return end
+						CarManager.AnimationNodeCar(voiture, cframeNoeud(T[j]), j == #T)
+					end
+				end
+				if voiture.Parent then voiture:SetAttribute("Rugissement", false) end
+				if not voiture.Parent then return end
 				if not CarManager.AccueillirVoitureAchetee(etat.achat.joueur, voiture) then voiture:Destroy() end
 				return "achetee"
 			elseif i == dernierAnneau then
