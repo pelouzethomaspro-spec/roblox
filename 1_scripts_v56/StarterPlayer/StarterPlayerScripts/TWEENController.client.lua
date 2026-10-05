@@ -139,6 +139,7 @@ local function groupesRoues(car, root)
 	return groupes, ordre
 end
 
+local poserRoues                     -- (definie plus bas ; declaree ici pour preparerVoiture)
 local function preparerVoiture(car, root)
 	local V = Voitures[car]
 	if V and V.root == root then return V end
@@ -170,6 +171,12 @@ local function preparerVoiture(car, root)
 		table.insert(V.roues, roue)
 	end
 	Voitures[car] = V
+	-- v56 : ROUES FANTOMES : les roues sont ancrees localement et ne sont posees que pendant un trajet. Quand le serveur
+	-- TELEPORTE la voiture (fin du cycle de la station : PivotTo vers la sortie, le temps que le client paie a la caisse), la
+	-- carrosserie bougeait et les roues restaient dans la station. On les repose a chaque changement de CFrame du Root hors trajet.
+	root:GetPropertyChangedSignal("CFrame"):Connect(function()
+		if not V.enTrajet and Voitures[car] == V then poserRoues(V) end
+	end)
 	car.AncestryChanged:Connect(function(_, parent)
 		if parent == nil then
 			if V.son then V.son:Destroy() end
@@ -181,7 +188,7 @@ local function preparerVoiture(car, root)
 end
 
 -- pose les roues par rapport au Root, tournees de V.angle autour de l'axe lateral (X du Root)
-local function poserRoues(V)
+poserRoues = function(V)
 	local rootCF = V.root.CFrame
 	for _, roue in ipairs(V.roues) do
 		local rot = CFrame.new(roue.centre) * CFrame.Angles(V.angle, 0, 0) * CFrame.new(-roue.centre)
@@ -350,7 +357,7 @@ local function jouerTrajet(car, root, V, segs, etatFinal)
 		local e = T.segs[T.i]
 		local tau = math.clamp(t - e.debut, 0, e.duree)
 		-- distance parcourue sur le segment : acceleration uniforme de v0 a v1 sur la duree
-		local va, vb = math.max(e.v0, 4), math.max(e.v1, e.v1 > 0 and 4 or 0)
+		local va, vb = math.max(e.v0, 4), math.max(e.v1, 4)        -- v56 : meme profil que le serveur (CarManager : vb = max(v, 4))
 		local sMax = (va + vb) / 2 * e.duree
 		local sv = va * tau + (vb - va) * tau * tau / (2 * e.duree)
 		local u = (sMax > 0) and math.clamp(sv / sMax, 0, 1) or 1

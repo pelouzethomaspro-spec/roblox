@@ -74,7 +74,11 @@ do
 		local dossier = ReplicatedStorage:FindFirstChild(nomDossier)
 		if dossier then
 			for _, m in ipairs(dossier:GetChildren()) do
-				if m:IsA("Model") and m:GetAttribute("EchelleCase") ~= CASE then
+				-- v56 : les panneaux publicitaires (Catalogue : Pub) sont importes a leur taille reelle : pas de x1,5
+				local infosM = (nomDossier == "Furniture") and Catalogue.Furniture[m.Name] or nil
+				if m:IsA("Model") and infosM and infosM.Pub and m:GetAttribute("EchelleCase") ~= CASE then
+					m:SetAttribute("EchelleCase", CASE)
+				elseif m:IsA("Model") and m:GetAttribute("EchelleCase") ~= CASE then
 					local ok = pcall(function() m:ScaleTo(m:GetScale() * ECHELLE / ((m:GetAttribute("EchelleCase") or 10) / 10)) end)
 					if ok then m:SetAttribute("EchelleCase", CASE); n += 1 end
 				end
@@ -593,6 +597,7 @@ function PlotManager.Place(player: Player, name: string, categorie: string, orie
 		local okR, Rank = pcall(function() return require(ReplicatedStorage:WaitForChild("Catalogue"):WaitForChild("Rank")) end)
 		if okR and Rank and Rank.Numero then
 			local requis = Rank.Numero(infos.Rang)
+			if not requis then warn("[Plot] rang inconnu dans le catalogue : " .. tostring(infos.Rang)); return false, "rang inconnu" end   -- v56
 			local actuel = player:GetAttribute("RankIndex") or 1
 			if actuel < requis then return false, "rang " .. tostring(infos.Rang) .. " requis" end
 		end
@@ -833,11 +838,10 @@ function PlotManager.Place(player: Player, name: string, categorie: string, orie
 	end
 	
 	if infos.Type == "Caisse" then
-		print("init caisse")
 		PlayerData.InitCaisse(player, newFurnitureID,name, infos.Automatic, caseAncrageX, caseAncrageZ, orientation, demiInfos)
 	end
 	
-	PlotManager.PrintGrid(player, categorie)
+	if PlotManager.DEBUG_GRILLE then PlotManager.PrintGrid(player, categorie) end     -- v56 : plus de grille dans la console a chaque pose
 	Build(name, categorie, folder, plotcenter, caseAncrageX, caseAncrageZ, orientation, newFurnitureID, finalX, finalZ, zone)
 	if categorie == "Sol" then MajBorduresAutour(folder, plotcenter, zone, finalX, finalZ); MajAcces(player, zone, finalX, finalZ) end
 	return true
@@ -957,7 +961,11 @@ function PlotManager.Destroy(player: Player, item: Model)
 	if item:GetAttribute("Zone") == "Annexe" then
 		grid, zoneX, zoneZ = PlayerData.GetAnnexe(player), PlayerData.ANNEXE_X, PlayerData.ANNEXE_Z + 1
 	end
-	if not (grid and grid[X] and grid[X][Z]) then return false end
+	-- v56 : pour un meuble de la demi-grille, X/Z sont des DEMI-cases : on teste la case mere (sinon la moitie du plot et
+	-- les 3/4 de l'annexe refusaient la suppression des cartons, plantes, caisses et panneaux pub)
+	local cx, cz = X, Z
+	if item:GetAttribute("Demi") then cx, cz = Demi.CaseMere(X, Z) end
+	if not (grid and grid[cx] and grid[cx][cz]) then return false end
 
 	if categorie == "Sol" or categorie == "Plafond" or categorie == "MurNord" or categorie == "MurOuest" then
 		grid[X][Z][categorie] = 0

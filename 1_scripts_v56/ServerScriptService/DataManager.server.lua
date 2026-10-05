@@ -8,8 +8,13 @@ local PlayerData = require(ServerScriptService:WaitForChild("PlayerData"))
 local CarManager = require(ServerScriptService:WaitForChild("CarManager"))
 local WorkerManager = require(ServerScriptService:WaitForChild("WorkerManager"))
 local Livraison = require(ServerScriptService:WaitForChild("Livraison"))
-pcall(function() require(ServerScriptService:WaitForChild("Diagnostic", 10)) end)      -- v55 : modes Circulation / Decoration (RemoteFunction)
-pcall(function() require(ServerScriptService:WaitForChild("Monetisation", 10)) end)    -- v55 : ProcessReceipt (produits Robux)
+do  -- v55 : modules optionnels ; v56 : une erreur de chargement est signalee dans la console au lieu d'etre avalee
+	local okD, eD = pcall(function() require(ServerScriptService:WaitForChild("Diagnostic", 10)) end)      -- modes Circulation / Decoration
+	if not okD then warn("[Data] Diagnostic : " .. tostring(eD)) end
+	local okM, eM = pcall(function() require(ServerScriptService:WaitForChild("Monetisation", 10)) end)    -- ProcessReceipt (produits Robux)
+	if not okM then warn("[Data] Monetisation : " .. tostring(eM)) end
+end
+local Notes = require(ServerScriptService:WaitForChild("Notes"))                        -- v56 : notes de la station (Ma station)
 
 local InitialData = ReplicatedStorage:WaitForChild("InitialData")
 local ChoosePlotfunction = ReplicatedStorage:WaitForChild("ChoosePlotfunction")
@@ -85,6 +90,7 @@ local function PlayerAdded(player)
 	end
 
 	profile:AddUserId(player.UserId)
+	profile:Reconcile()           -- v56 : complete un ancien profil avec les champs ajoutes au modele (Index par rarete, Tutoriel...)
 
 	-- Se déclenche si le profil est réclamé par un autre serveur.
 	profile:ListenToRelease(function()
@@ -132,6 +138,7 @@ local function OnChoosePlot(player, spawnfolder)
 	CarManager.Start(player, plotSpawn)
 	Livraison.Start(player, plotSpawn)            -- avant les employes : pose le poste du logisticien (attribut GaragePoste)
 	WorkerManager.Start(player, plotFolder)
+	Notes.Demarrer(player)                        -- v56 : notes Proprete / Rapidite / Accueil / Decoration
 
 	-- 6. v53 : premiere partie -> tutoriel (ItsCirly). Le profil garde Tutoriel = true ensuite ; /tutoriel le rejoue.
 	local profile = Profiles[player]
@@ -158,6 +165,7 @@ local function PlayerRemoving(player)
 	PlotManager.RemovePlot(player)
 	CarManager.Stop(player)
 	WorkerManager.Stop(player)
+	Notes.Arreter(player)
 	Livraison.Stop(player)
 
 	profile:Release()

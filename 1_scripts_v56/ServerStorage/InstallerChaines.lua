@@ -74,11 +74,21 @@ return function()
 		end
 	end
 
-	-- 3) animations : RBX_ANIMSAVES + copies de test (Studio) pour celles sans ID publie
-	if next(montees) then
+	-- 3) animations : RBX_ANIMSAVES + copies de test (Studio) pour celles sans ID publie.
+	-- v56 : seulement en EDITION dans Studio (les 14 animations sont publiees) : en jeu, cette recopie de dizaines de
+	-- milliers d'instances a chaque demarrage ne servait a rien et ralentissait le lancement.
+	local enJeu = game:GetService("RunService"):IsRunning()
+	if next(montees) and not enJeu then
 		local ok, err = pcall(Montage.animations, montees)
 		if not ok then warn("[Chaines] animations : " .. tostring(err)) end
 	end
-	print(("[Chaines] %d chaine(s) montee(s). Etape suivante : publier les 7 animations Chaine* (ServerStorage > AnimationsStations, clic droit > Enregistrer sur Roblox) et coller les ID dans ReplicatedStorage > Stations > Reglages."):format(total))
+	-- v56 : version des donnees posee sur la map (Lancement la compare : une execution dans Studio + enregistrement suffit,
+	-- avant l'attribut n'etait jamais sauvegarde et les 4 chaines etaient remontees a CHAQUE lancement)
+	pcall(function() map:SetAttribute("ChainesVersion", "echelle=" .. tostring(D.ECHELLE_ANIM or 1)) end)
+	if enJeu then
+		print(("[Chaines] %d chaine(s) montee(s)."):format(total))
+	else
+		print(("[Chaines] %d chaine(s) montee(s). Etape suivante : publier les 7 animations Chaine* (ServerStorage > AnimationsStations, clic droit > Enregistrer sur Roblox) et coller les ID dans ReplicatedStorage > Stations > Reglages, puis ENREGISTRER la place (attribut ChainesVersion)."):format(total))
+	end
 	return total
 end

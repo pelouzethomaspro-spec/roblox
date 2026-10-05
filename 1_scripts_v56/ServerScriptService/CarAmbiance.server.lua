@@ -33,6 +33,7 @@ local CarManager = require(ServerScriptService:WaitForChild("CarManager"))
 local PlayerData = require(ServerScriptService:WaitForChild("PlayerData"))
 local Car = require(ReplicatedStorage:WaitForChild("Catalogue"):WaitForChild("Car"))
 local Routes = require(ServerStorage:WaitForChild("RoutesAmbiance"))
+local Enchere = nil                           -- v56 : module Enchere (charge plus bas) ; declare ICI pour que trajet() le voie (c'etait une globale nil)
 local okD, D = pcall(function() return require(ReplicatedStorage:WaitForChild("Stations"):WaitForChild("Donnees"):WaitForChild("ChaineProduction")) end)
 if not okD then warn("[Ambiance] donnees de la chaine introuvables : " .. tostring(D)); D = nil end
 
@@ -131,7 +132,6 @@ local function trajet(voiture, route, nomUsine, etat)
 			if n[6] == sortie[6] then
 				-- bifurcation : on est au point de sortie de l'anneau du trajet d'achat
 				voiture:SetAttribute("SurAnneau", false)
-				actives[nomUsine] -= 1
 				local T = etat.achat.trajet
 				for j = 2, #T do
 					if not voiture.Parent then return end
@@ -173,8 +173,8 @@ end
 
 -- v55 : achat aux ENCHERES (module Enchere : E = acheter / surencherir x1,5 par tour de 10 s, F = Robux). Les verifications
 -- restent ici : plot choisi, voiture encore sur l'anneau, trajet vers le plot ; l'argent est pris par Enchere a la fin du tour.
-local okE, Enchere = pcall(function() return require(ServerScriptService:WaitForChild("Enchere", 10)) end)
-if not okE then warn("[Ambiance] module Enchere introuvable : " .. tostring(Enchere)); Enchere = nil end
+local okE, modE = pcall(function() return require(ServerScriptService:WaitForChild("Enchere", 10)) end)
+if okE then Enchere = modE else warn("[Ambiance] module Enchere introuvable : " .. tostring(modE)) end
 
 local function invite(voiture, nomModele, prix, tier, etat)
 	if not Enchere then return end
@@ -191,7 +191,7 @@ local function invite(voiture, nomModele, prix, tier, etat)
 		gagne = function(player, prixPaye)
 			local spawnFolder = CarManager.PlotDe(player)
 			local T = spawnFolder and Routes.Achat and Routes.Achat[spawnFolder.Name]
-			if not T then return end
+			if not T then if prixPaye and prixPaye > 0 then PlayerData.AddMoney(player, prixPaye) end return end   -- v56 : rembourse
 			voiture:SetAttribute("Proprietaire", player.UserId)
 			voiture:SetAttribute("Achetee", true)
 			voiture:SetAttribute("Tier", tier)
@@ -222,10 +222,8 @@ local function lancer(nomUsine, route, nomModele, couleur, id)
 	task.spawn(function()
 		local ok, r = pcall(trajet, voiture, route, nomUsine, etat)
 		if not ok then warn("[Ambiance] " .. tostring(r)) end
-		if r ~= "achetee" then
-			if voiture.Parent then voiture:Destroy() end
-			actives[nomUsine] -= 1
-		end
+		if r ~= "achetee" and voiture.Parent then voiture:Destroy() end
+		actives[nomUsine] -= 1          -- v56 : un seul decrement (il y en avait deux sur le chemin "achetee")
 	end)
 end
 

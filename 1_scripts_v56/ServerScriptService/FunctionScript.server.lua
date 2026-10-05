@@ -107,7 +107,8 @@ end
 -- ======================================================================================================================
 
 Hirefunction.OnServerInvoke = function(player, workertype)
-	WorkerManager.Hire(player, workertype)
+	local ok, raison = WorkerManager.Hire(player, workertype)      -- v56 : renvoie le resultat (embauche payante)
+	return ok == true, raison
 end
 
 Assignfunction.OnServerInvoke = function(player, workerID, stationID)

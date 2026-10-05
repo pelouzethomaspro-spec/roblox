@@ -392,6 +392,7 @@ function PlayerData.AddCar(player: Player, carName: string, carTier: string)
 	if not data then return end
 
 	if not data.Index then data.Index = {} end
+	if not data.Index[carTier] then data.Index[carTier] = {} end          -- v56 : ancien profil sans cette rarete
 
 	if not data.Index[carTier][carName] then
 		data.Index[carTier][carName] = 0
@@ -399,6 +400,7 @@ function PlayerData.AddCar(player: Player, carName: string, carTier: string)
 
 	data.Index[carTier][carName] = data.Index[carTier][carName] + 1
 	UpdateClientData:FireClient(player, "Index", data.Index)
+	PlayerData.MajAttributs(player)     -- v56 : le rang depend aussi de l'Index (Requis) : attribut RankIndex a jour tout de suite
 end
 
 -- ======================================================================================================================
@@ -422,7 +424,7 @@ function PlayerData.GetRank(player: Player)
 		for tier, nombre in pairs(suivant.Requis) do
 			
 			local total = 0
-			for _, n in pairs(data.Index[tier]) do
+			for _, n in pairs((data and data.Index and data.Index[tier]) or {}) do      -- v56 : garde (ancien profil)
 				total += n
 			end
 			
@@ -508,9 +510,11 @@ function PlayerData.SpendMoney(player: Player, amount: number): boolean
 			Data[player.UserId].Money = Data[player.UserId].Money - amount
 			UpdateClientData:FireClient(player, "Money", Data[player.UserId].Money)
 			player:SetAttribute("Money", Data[player.UserId].Money)
-			
+			return true
 		end
+		return false
 	end
+	return amount <= 0          -- v56 : renvoie vrai/faux (etait annote boolean sans jamais rien renvoyer)
 end
 
 -- ======================================================================================================================

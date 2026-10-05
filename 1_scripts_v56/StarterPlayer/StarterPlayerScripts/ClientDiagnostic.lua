@@ -25,7 +25,14 @@ local COULEURS = {
 local TRANSPARENCE = 0.45
 
 local joueur = Players.LocalPlayer
-local Fonction = ReplicatedStorage:WaitForChild("DiagnosticFunction", 60)
+-- v56 : on n'attend plus la RemoteFunction au chargement (60 s d'ecran de chargement si le serveur ne l'avait pas creee) :
+-- elle est cherchee au premier rafraichissement, avec un court delai.
+local Fonction = ReplicatedStorage:FindFirstChild("DiagnosticFunction")
+local function fonction()
+	if Fonction and Fonction.Parent then return Fonction end
+	Fonction = ReplicatedStorage:WaitForChild("DiagnosticFunction", 5)
+	return Fonction
+end
 
 local mode = nil
 local dossier = nil
@@ -113,7 +120,7 @@ end
 
 local jeton = 0
 function ClientDiagnostic.Rafraichir()
-	if not mode or not Fonction then return end
+	if not mode then return end
 	if enAttente then return end
 	enAttente = true
 	jeton += 1
@@ -122,7 +129,9 @@ function ClientDiagnostic.Rafraichir()
 		task.wait(0.3)                       -- regroupe les poses en serie
 		enAttente = false
 		if mode == nil or monJeton ~= jeton then return end
-		local ok, res = pcall(function() return Fonction:InvokeServer(mode) end)
+		local f = fonction()
+		if not f then mode = nil; return end
+		local ok, res = pcall(function() return f:InvokeServer(mode) end)
 		if not (ok and res) or mode == nil or monJeton ~= jeton then return end
 		vider()
 		if mode == "decoration" then afficherDecoration(res) else afficherCirculation(res) end
@@ -132,9 +141,11 @@ function ClientDiagnostic.Rafraichir()
 end
 
 function ClientDiagnostic.Activer(m)
+	if not fonction() then warn("[Diagnostic] DiagnosticFunction absente : mode indisponible"); mode = nil; return nil end   -- v56
 	mode = m
 	vider()
 	ClientDiagnostic.Rafraichir()
+	return m
 end
 
 function ClientDiagnostic.Desactiver()

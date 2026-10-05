@@ -112,7 +112,17 @@ local function enregistrer(modele)
 	if not (socle and ctrl and (voiture or D.MODE == "chaine")) then warn("Stations : " .. nom .. " n'est pas montee (lance MonterStations_Studio)") return end
 	local st = {modele = modele, D = D, socle = socle, rep = Outils.repere(socle), voiture = voiture, roues = {}, motRoues = {}, cache = {}}
 	st.animator = ctrl:FindFirstChildOfClass("Animator") or ctrl:WaitForChild("Animator", 10)
+	if not st.animator then warn("Stations : " .. nom .. " sans Animator (Animation > Animator) : station ignoree") return end   -- v56
 	st.motVoiture = voiture and voiture:FindFirstChild("Articulation")
+	-- v56 : l'attribut "Repos" des pieces mobiles (CFrame monde au montage, scene d'origine) est perime pour les stations
+	-- posees dans les plots (prefabs agrandis x1,5 puis clones) : on le reprend sur la pose actuelle (le serveur n'anime
+	-- jamais : au moment ou le client decouvre la station, elle est au repos). Les chaines sont montees sur place : inchange.
+	if D.MODE ~= "chaine" then
+		for _, j in ipairs(D.JOINTS or {}) do
+			local p = modele:FindFirstChild(j[1], true)
+			if p and p:IsA("BasePart") and p:GetAttribute("Repos") ~= nil then p:SetAttribute("Repos", p.CFrame) end
+		end
+	end
 	for _, pl in ipairs(PLACES) do
 		local r = modele:FindFirstChild("Roue_" .. pl)
 		if r then st.roues[pl] = r; st.motRoues[pl] = r:FindFirstChild("Articulation") end

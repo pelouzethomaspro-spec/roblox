@@ -41,7 +41,8 @@ local function badge(player, character)
 		rang.Text = string.upper(r.Nom); rang.TextColor3 = r.Couleur
 	end
 	maj()
-	player:GetAttributeChangedSignal("Rank"):Connect(maj)
+	local co = player:GetAttributeChangedSignal("Rank"):Connect(maj)
+	bb.Destroying:Connect(function() co:Disconnect() end)          -- v56 : plus de connexion orpheline a chaque respawn
 	bb.Parent = tete
 end
 
@@ -57,6 +58,7 @@ Players.PlayerAdded:Connect(suivre)
 -- ----------------------------------------------------------------------------------------------------------------------
 local DISTANCE = 80
 local panneau = nil
+local connexionRang = nil            -- v56 : connexion unique au changement de rang (panneau du tunnel)
 
 local function tunnelDuJoueur()
 	local plots = workspace:FindFirstChild("Plots")
@@ -124,7 +126,9 @@ RunService.Heartbeat:Connect(function()
 	if not panneau or panneau.Parent ~= tunnel then
 		if panneau then panneau:Destroy() end
 		panneau = creerPanneau(tunnel)
-		joueur:GetAttributeChangedSignal("Rank"):Connect(function() if panneau then majPanneau(panneau) end end)
+		if not connexionRang then           -- v56 : une seule connexion (elle etait refaite a chaque nouveau panneau)
+			connexionRang = joueur:GetAttributeChangedSignal("Rank"):Connect(function() if panneau then majPanneau(panneau) end end)
+		end
 	end
 	local perso = joueur.Character
 	local root = perso and perso:FindFirstChild("HumanoidRootPart")

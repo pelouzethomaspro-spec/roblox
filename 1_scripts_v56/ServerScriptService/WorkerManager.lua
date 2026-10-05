@@ -20,8 +20,14 @@ local UNIFORMES = {
 	Attendant = { polo = Color3.fromRGB(37, 99, 235),  casquette = Color3.fromRGB(37, 99, 235),  visiere = Color3.fromRGB(245, 247, 250), role = "Employe" },
 	Cashier   = { polo = Color3.fromRGB(23, 143, 85),  casquette = Color3.fromRGB(23, 143, 85),  visiere = Color3.fromRGB(245, 247, 250), role = "Caissier" },
 	Logistician = { polo = Color3.fromRGB(232, 120, 24), casquette = Color3.fromRGB(232, 120, 24), visiere = Color3.fromRGB(245, 247, 250), role = "Logisticien" },
+	Cleaner   = { polo = Color3.fromRGB(120, 72, 200),  casquette = Color3.fromRGB(120, 72, 200),  visiere = Color3.fromRGB(245, 247, 250), role = "Entretien" },   -- v56
 }
-local SALAIRES = { Attendant = 12, Cashier = 7, Logistician = 10 }     -- $/min
+local SALAIRES = { Attendant = 12, Cashier = 7, Logistician = 10, Cleaner = 8 }     -- $/min
+-- v56 : l'embauche est PAYANTE (ECONOMIE_v56.md : evite d'embaucher sans limite et de se ruiner en salaires)
+local PRIX_EMBAUCHE = { Attendant = 300, Cashier = 200, Logistician = 300, Cleaner = 250 }
+WorkerManager.SALAIRES = SALAIRES
+WorkerManager.PRIX_EMBAUCHE = PRIX_EMBAUCHE
+-- l'agent d'entretien (Cleaner) n'a pas de poste : il se promene entre les stations et nettoie (module Notes)
 -- le logisticien : affecte au garage de l'atelier (Livraison), il va chercher les cartons du van tout seul.
 -- Son "meuble" est data.Garage.Garage (categorie "Garage", id "Garage") ; son poste = attribut GaragePoste du joueur (CFrame)
 local function categorieDe(workertype)
@@ -117,7 +123,7 @@ function WorkerManager.Start(player : Player, Folder: Folder)
 	for workerID, workerdata in pairs(Workers) do
 		
 		local template = nil
-		if workerdata.Type == "Attendant" or workerdata.Type == "Logistician" then
+		if workerdata.Type == "Attendant" or workerdata.Type == "Logistician" or workerdata.Type == "Cleaner" then
 			template = ReplicatedStorage:FindFirstChild("AttendantTemplate")
 		elseif workerdata.Type == "Cashier" then
 			template = ReplicatedStorage:FindFirstChild("CashierTemplate")
@@ -173,14 +179,18 @@ function WorkerManager.Hire(player: Player, workertype: string)
 	local Folder = workspace.Plots:FindFirstChild(player.Name .. "'s plot")
 	if not Folder then return false end
 
-	if workertype ~= "Attendant" and workertype ~= "Cashier" and workertype ~= "Logistician" then
-		return
+	if workertype ~= "Attendant" and workertype ~= "Cashier" and workertype ~= "Logistician" and workertype ~= "Cleaner" then
+		return false
 	end
+	-- v56 : prix d'embauche (serveur : l'argent est verifie et debite ici)
+	local prix = PRIX_EMBAUCHE[workertype] or 0
+	if prix > 0 and PlayerData.GetMoney(player) < prix then return false, "argent insuffisant" end
+	if prix > 0 and not PlayerData.SpendMoney(player, prix) then return false, "argent insuffisant" end
 	
 	local workerID = HttpService:GenerateGUID(false)
 	
 	local template = nil
-	if workertype == "Attendant" or workertype == "Logistician" then
+	if workertype == "Attendant" or workertype == "Logistician" or workertype == "Cleaner" then
 		template = ReplicatedStorage:FindFirstChild("AttendantTemplate")
 	elseif workertype == "Cashier" then
 		template = ReplicatedStorage:FindFirstChild("CashierTemplate")
@@ -196,6 +206,7 @@ function WorkerManager.Hire(player: Player, workertype: string)
 			dummy:PivotTo(Folder.PlotCenterRef.Value:GetPivot() * CFrame.new(0, 5, 0))
 	end		
 		PlayerData.InitWorker(player, workerID, workertype, workername)
+	return true
 end
 
 function WorkerManager.Assign(player: Player, workerID: string, furnitureID: string)
@@ -302,10 +313,9 @@ function WorkerManager.Fire(player: Player, workerID: string)
 
 	local worker = data.Workers[workerID]
 
-	local category = categorieDe(worker.Type)
-	if not category then return false end
+	local category = categorieDe(worker.Type)          -- nil pour l'agent d'entretien (v56) : on le renvoie quand meme
 
-	if worker.Furniture then
+	if category and worker.Furniture then
 		PlayerData.FireWorker(player, worker.Furniture, category)
 	end
 

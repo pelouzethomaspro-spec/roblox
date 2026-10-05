@@ -1,4 +1,8 @@
 --[[ Catalogue / Rank — v55 : les 7 RANGS du joueur (Thomas : Bronze, Argent, Or, Platine, Diamant, Maitre, Legende).
+	v56 : seuils d'XP, criteres et cadences re-equilibres d'apres la simulation (2_documents/ECONOMIE_v56.md : Argent ~20 min,
+	Or ~1 h 15, Platine ~3 h, Diamant ~7 h, Maitre ~20 h, Legende ~55 h de jeu sans panneaux ni decoration) ; plus de voiture
+	Divine exigee avant Legende (0,02 % de chances : on pouvait rester bloque des heures). Debloque rempli : ces objets portent
+	le champ Rang correspondant dans Catalogue/Furniture (le menu Construction les grise en dessous du rang).
 	Pour passer au rang suivant il faut l'XP ET les criteres : avoir lave au moins N voitures de chaque rarete indiquee
 	(Index du profil, rempli par CarManager a chaque voiture servie). Les seuils ci-dessous sont une proposition : ajuste
 	librement, rien dans le code n'en depend.
@@ -15,44 +19,44 @@
 ]]
 local Rank = {
 	{
-		Nom = "Bronze", Couleur = Color3.fromRGB(205, 127, 50), Xp = 0, Spawn = 19.0,
+		Nom = "Bronze", Couleur = Color3.fromRGB(205, 127, 50), Xp = 0, Spawn = 18.0,
 		Requis = {},
 		Probas = {0.700, 0.250, 0.0450, 0.0050, 0.0000, 0.00000, 0.00000},
-		Debloque = {},
+		Debloque = {"L1_Vide", "L2_Seaux", "E1_Base", "PUB_1_PANCARTE", "PUB_2_CHEVALET"},
 	},
 	{
-		Nom = "Argent", Couleur = Color3.fromRGB(192, 192, 200), Xp = 5000, Spawn = 16.0,
-		Requis = { Common = 25, Uncommon = 10, Rare = 2 },
+		Nom = "Argent", Couleur = Color3.fromRGB(192, 192, 200), Xp = 4000, Spawn = 15.0,
+		Requis = { Common = 20, Uncommon = 8, Rare = 1 },
 		Probas = {0.550, 0.300, 0.1200, 0.0280, 0.0020, 0.00000, 0.00000},
-		Debloque = {},
+		Debloque = {"L3_Karcher", "E2_Barils", "PUB_3_MONUMENT", "PUB_4_PORTIQUE"},
 	},
 	{
-		Nom = "Or", Couleur = Color3.fromRGB(255, 200, 40), Xp = 25000, Spawn = 13.0,
-		Requis = { Common = 100, Uncommon = 50, Rare = 20, Epic = 3 },
+		Nom = "Or", Couleur = Color3.fromRGB(255, 200, 40), Xp = 20000, Spawn = 12.5,
+		Requis = { Common = 80, Uncommon = 40, Rare = 15, Epic = 2 },
 		Probas = {0.420, 0.320, 0.1900, 0.0600, 0.0090, 0.00100, 0.00000},
-		Debloque = {},
+		Debloque = {"L4_Rouleaux", "E3_Pompes", "E4_Bornes", "2", "PUB_5_ENSEIGNE", "PUB_6_BIPODE"},
 	},
 	{
-		Nom = "Platine", Couleur = Color3.fromRGB(120, 210, 230), Xp = 100000, Spawn = 10.5,
-		Requis = { Common = 300, Uncommon = 200, Rare = 100, Epic = 30, Legendary = 2 },
+		Nom = "Platine", Couleur = Color3.fromRGB(120, 210, 230), Xp = 80000, Spawn = 10.0,
+		Requis = { Common = 250, Uncommon = 150, Rare = 80, Epic = 20, Legendary = 1 },
 		Probas = {0.300, 0.310, 0.2600, 0.1050, 0.0220, 0.00300, 0.00000},
-		Debloque = {},
+		Debloque = {"E5_Pneus", "E7_Teinte", "PUB_7_TREILLIS"},
 	},
 	{
-		Nom = "Diamant", Couleur = Color3.fromRGB(110, 170, 255), Xp = 500000, Spawn = 8.5,
-		Requis = { Common = 800, Uncommon = 600, Rare = 400, Epic = 150, Legendary = 15, Mythic = 1 },
+		Nom = "Diamant", Couleur = Color3.fromRGB(110, 170, 255), Xp = 300000, Spawn = 8.5,
+		Requis = { Common = 600, Uncommon = 450, Rare = 300, Epic = 100, Legendary = 10 },
 		Probas = {0.200, 0.270, 0.3200, 0.1650, 0.0380, 0.00680, 0.00020},
-		Debloque = {},
+		Debloque = {"E6_Peinture", "PUB_8_MAT"},
 	},
 	{
-		Nom = "Maître", Couleur = Color3.fromRGB(190, 90, 255), Xp = 3000000, Spawn = 7.0,
-		Requis = { Rare = 1500, Epic = 800, Legendary = 80, Mythic = 8, Divine = 1 },
+		Nom = "Maître", Couleur = Color3.fromRGB(190, 90, 255), Xp = 1200000, Spawn = 7.0,
+		Requis = { Rare = 1000, Epic = 500, Legendary = 50, Mythic = 4 },
 		Probas = {0.130, 0.220, 0.3400, 0.2300, 0.0700, 0.00940, 0.00060},
-		Debloque = {},
+		Debloque = {"PUB_9_TOTEM"},
 	},
 	{
-		Nom = "Légende", Couleur = Color3.fromRGB(255, 80, 80), Xp = 20000000, Spawn = 6.0,
-		Requis = { Epic = 4000, Legendary = 400, Mythic = 40, Divine = 5 },
+		Nom = "Légende", Couleur = Color3.fromRGB(255, 80, 80), Xp = 5000000, Spawn = 6.0,
+		Requis = { Epic = 2500, Legendary = 250, Mythic = 20, Divine = 2 },
 		Probas = {0.080, 0.170, 0.3300, 0.2900, 0.1100, 0.01850, 0.00150},
 		Debloque = {},
 	},
@@ -64,7 +68,7 @@ Rank.NomsRaretes = { Common = "Commune", Uncommon = "Peu commune", Rare = "Rare"
 -- numero (1..7) d'un rang par son nom
 function Rank.Numero(nom)
 	for i, r in ipairs(Rank) do if r.Nom == nom then return i end end
-	return 1
+	return nil                 -- v56 : rang inconnu -> nil (PlotManager refuse ; avant, 1 = achetable des Bronze)
 end
 
 return Rank

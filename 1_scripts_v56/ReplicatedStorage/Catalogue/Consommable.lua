@@ -10,14 +10,14 @@ local Consommable = {
 	-- ------------------------------------------------------------------ lavage (L1, L2, L3, L4, E1)
 	["1"] = {
 		Buy = 10,
-		Sell = 25,
+		Sell = 30,                 -- v56 : 25 -> 30 (marge 20 $ par lavage, voir ECONOMIE_v56.md)
 		Volume = 25,
 		Name = "Nettoyant Carroserie",
 		Type = "Lavage",
 	},
 	["2"] = {
 		Buy = 10,
-		Sell = 25,
+		Sell = 30,                 -- v56 : 25 -> 30
 		Volume = 3,
 		Name = "Nettoyant Vitre",
 		Type = "Lavage",

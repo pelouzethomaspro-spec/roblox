@@ -131,8 +131,9 @@ end
 -- fin du tour : le meneur gagne s'il a toujours l'argent ; sinon on remonte les participants
 local function finDuTour(E)
 	if E.fini then return end
+	if not (E.voiture and E.voiture.Parent) then E.fini = true; Encheres[E.voiture] = nil; return end   -- v56 : voiture deja detruite
 	local ordre = E.historique                      -- { {joueur, prix}, ... } du plus recent au plus ancien
-	for i = #ordre, 1, -1 do
+	for i = 1, #ordre do                            -- v56 : du MENEUR (plus recent) au plus ancien ; la boucle etait inversee
 		local h = ordre[i]
 		if h.joueur.Parent and PlayerData.GetMoney(h.joueur) >= h.prix then
 			local ok, raison = E.infos.peutAcheter(h.joueur)

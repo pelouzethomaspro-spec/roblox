@@ -731,8 +731,10 @@ for _, p in ipairs(TABS) do menus[p].Visible = false end
 -- M ou Echap : ferme le panneau ouvert (la barre du bas reste toujours affichee)
 UserInputService.InputBegan:Connect(function(input, gp)
 	if gp then return end
-	if (input.KeyCode == Enum.KeyCode.M or input.KeyCode == Enum.KeyCode.Escape) and enJeu and current then
-		showTab(nil)
+	if not enJeu then return end
+	if input.KeyCode == Enum.KeyCode.Escape and current then showTab(nil)
+	elseif input.KeyCode == Enum.KeyCode.M then
+		if current then showTab(nil) else showTab("Build") end       -- v56 : regle du designer, M ouvre ET ferme
 	end
 end)
 ClientData.OnDataChanged.Event:Connect(function(cle)
@@ -814,10 +816,69 @@ section("Shop", function()
 	setTab("GamePass"); sh.Visible = false
 end)
 
--- ===== Ma station (UI v24 : note globale + detail, image fixe pour l'instant) =====
+-- ===== Ma station (UI v24 : note globale + detail) =====
+-- v56 : les notes viennent du serveur (module Notes : attributs NoteGlobale / NoteProprete / NoteRapidite / NoteAccueil /
+-- NoteDecoration, 0..100). L'image de la maquette (Art/Base/T0, a importer) sert de fond ; les valeurs sont des TextLabels
+-- et des barres crees par script PAR-DESSUS (aucun objet du designer n'est renomme ni deplace). Positions en fraction du
+-- panneau : a ajuster sur la maquette une fois l'image Station_00 importee.
 section("Station", function()
-	ouvrir.Station = function() end
+	local sn = menus.Station
+	local POS = {                      -- {x, y} en fraction du panneau, et largeur
+		globale = { 0.50, 0.22 },
+		lignes = { { "proprete", "Propreté", 0.40 }, { "rapidite", "Rapidité", 0.50 }, { "accueil", "Accueil", 0.60 }, { "decoration", "Décoration", 0.70 } },
+		x = 0.22, largeur = 0.56,
+	}
+	local calque = sn:FindFirstChild("NotesCalque")
+	if not calque then
+		calque = Instance.new("Frame"); calque.Name = "NotesCalque"; calque.BackgroundTransparency = 1; calque.Size = UDim2.fromScale(1, 1); calque.ZIndex = 40; calque.Parent = sn
+	end
+	local function texte(nom, pos, taille, aligne)
+		local l = calque:FindFirstChild(nom)
+		if not l then
+			l = Instance.new("TextLabel"); l.Name = nom; l.BackgroundTransparency = 1; l.FontFace = POLICE; l.TextColor3 = Color3.fromRGB(32, 40, 52)
+			l.TextSize = taille; l.ZIndex = 41; l.Parent = calque
+		end
+		l.Position = UDim2.fromScale(pos[1], pos[2]); l.AnchorPoint = Vector2.new(0.5, 0.5); l.Size = UDim2.fromScale(0.5, 0.08)
+		l.TextXAlignment = aligne or Enum.TextXAlignment.Center
+		return l
+	end
+	local etoiles = texte("Globale", POS.globale, 54)
+	local sousTitre = texte("GlobaleTexte", { POS.globale[1], POS.globale[2] + 0.07 }, 20)
+	local barres = {}
+	for _, li in ipairs(POS.lignes) do
+		local cle, libelle, y = li[1], li[2], li[3]
+		local nom = texte("Nom_" .. cle, { POS.x + 0.08, y }, 22, Enum.TextXAlignment.Left); nom.Size = UDim2.fromScale(0.18, 0.06); nom.Text = libelle
+		local val = texte("Val_" .. cle, { POS.x + POS.largeur + 0.05, y }, 22, Enum.TextXAlignment.Right); val.Size = UDim2.fromScale(0.1, 0.06)
+		local piste = calque:FindFirstChild("Piste_" .. cle)
+		if not piste then
+			piste = Instance.new("Frame"); piste.Name = "Piste_" .. cle; piste.BackgroundColor3 = Color3.fromRGB(226, 230, 236); piste.BorderSizePixel = 0; piste.ZIndex = 41
+			Instance.new("UICorner", piste).CornerRadius = UDim.new(1, 0)
+			local fill = Instance.new("Frame"); fill.Name = "Fill"; fill.BackgroundColor3 = Color3.fromRGB(23, 143, 85); fill.BorderSizePixel = 0; fill.ZIndex = 42; fill.Size = UDim2.fromScale(0, 1)
+			Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0); fill.Parent = piste
+			piste.Parent = calque
+		end
+		piste.AnchorPoint = Vector2.new(0, 0.5); piste.Position = UDim2.fromScale(POS.x + 0.18, y); piste.Size = UDim2.fromScale(POS.largeur - 0.22, 0.022)
+		barres[cle] = { val = val, fill = piste.Fill }
+	end
+	local COULEURS = { Color3.fromRGB(220, 110, 100), Color3.fromRGB(235, 185, 60), Color3.fromRGB(23, 143, 85) }
+	local function maj()
+		local g = joueur:GetAttribute("NoteGlobale") or 0
+		local n = math.clamp(math.floor(g / 20 + 0.5), 0, 5)
+		etoiles.Text = string.rep("★", n) .. string.rep("☆", 5 - n)
+		etoiles.TextColor3 = Color3.fromRGB(245, 185, 40)
+		local pourboire = 0.85 + 0.45 * g / 100
+		sousTitre.Text = ("Note %d / 100  ·  pourboires ×%.2f  ·  clients ×%.2f"):format(g, pourboire, 0.90 + 0.25 * g / 100)
+		for cle, b in pairs(barres) do
+			local v = joueur:GetAttribute("Note" .. (cle:gsub("^%l", string.upper))) or 0
+			b.val.Text = tostring(v) .. " %"
+			b.fill.Size = UDim2.fromScale(math.clamp(v / 100, 0, 1), 1)
+			b.fill.BackgroundColor3 = COULEURS[(v < 40 and 1) or (v < 70 and 2) or 3]
+		end
+	end
+	joueur.AttributeChanged:Connect(function(a) if a:sub(1, 4) == "Note" and sn.Visible then maj() end end)
+	ouvrir.Station = function() maj() end
 	fermer.Station = function() end
+	maj()
 end)
 
 -- ===== Stock =====
@@ -963,7 +1024,6 @@ section("Supply", function()
 		local b = sp.Art.Center:FindFirstChild(tostring(i))
 		if b then
 			b.Activated:Connect(function() select(i) end)
-			b.MouseEnter:Connect(function() play("hover") end)
 			b.MouseButton1Down:Connect(function() play("click") end)
 		end
 	end
@@ -1033,14 +1093,13 @@ section("Staff", function()
 		if ok == false then message("Embauche refusée", true) else play("buy") end
 	end
 	-- UI v24 : 4 cartes de recrutement (Attendant, Caissier, Logistique, Agent d'entretien) -> types serveur de WorkerManager
-	local METIERS = { Attendant = "Attendant", Cashier = "Cashier", Logistics = "Logistician", Cleaner = nil }
+	local METIERS = { Attendant = "Attendant", Cashier = "Cashier", Logistics = "Logistician", Cleaner = "Cleaner" }   -- v56 : agent d'entretien code (Notes)
 	for carte, type_ in pairs({ Attendant = "Attendant", Cashier = "Cashier", Logistics = "Logistician", Cleaner = "Cleaner" }) do
 		local c = sf.CenterHire:FindFirstChild(carte); local b = c and c:FindFirstChild("Hire")
 		if b then
 			pressFx(b)
 			b.Activated:Connect(function()
-				if METIERS[carte] then embaucher(METIERS[carte])
-				else message("Agent d'entretien : bientôt disponible (la propreté de la station arrive avec l'onglet Ma station)", true, 4) end
+				embaucher(METIERS[carte])
 			end)
 		end
 	end
@@ -1412,7 +1471,11 @@ section("Build", function()
 		end
 		bd.Art.Center.CanvasSize = UDim2.fromOffset(8 + #(DATA[cat] or {}) * PAS_CARTE, 0); bd.Art.Center.CanvasPosition = Vector2.new(0, 0)
 	end
-	for n, cat in pairs(CATS) do local b = bd.Left:FindFirstChild(n); if b then pressFx(b); b.Activated:Connect(function() if ClientBuild then ClientBuild.DestroyPhantom(); ClientBuild.DestroyLaser() end fill(cat) end) end end
+	for n, cat in pairs(CATS) do local b = bd.Left:FindFirstChild(n); if b then pressFx(b); b.Activated:Connect(function()
+		if ClientBuild then ClientBuild.DestroyPhantom(); ClientBuild.DestroyLaser() end
+		for _, k in ipairs({"move", "del"}) do local a = bd.Top:FindFirstChild("Active_" .. k) if a then a.Visible = false end end   -- v56 : le laser est detruit, la vignette aussi
+		fill(cat)
+	end) end end
 	for _, n in ipairs({"Rotate", "Place", "Delete", "Cancel", "Close"}) do pressFx(bd.Top[n]) end
 	bd.Top.Rotate.Activated:Connect(function()
 		if not ClientBuild then return end
@@ -1475,7 +1538,19 @@ section("Build", function()
 			bDeco.Activated:Connect(function() message("Mode décoration indisponible", true) end)
 		end
 	end
-	bd.Top.Cancel.Activated:Connect(function() if ClientBuild then ClientBuild.DestroyPhantom(); ClientBuild.DestroyLaser() end ActionManager.ChangerMode("Aucun"); toast.Visible = false; modeVignette(nil) end)
+	bd.Top.Cancel.Activated:Connect(function()
+		if ClientBuild then ClientBuild.DestroyPhantom(); ClientBuild.DestroyLaser() end
+		ActionManager.ChangerMode("Aucun"); toast.Visible = false
+		if fermerDiagnostic then fermerDiagnostic() else modeVignette(nil) end      -- v56 : Annuler eteint aussi le mode Circulation / Decoration
+	end)
+	-- v56 : un objet UNIQUE vient d'etre pose (panneau pub) : on repeint les cartes ("deja pose")
+	task.spawn(function()
+		local t0 = os.clock()
+		while not ClientBuild and os.clock() - t0 < 120 do task.wait(0.5) end
+		if ClientBuild and ClientBuild.Pose then
+			ClientBuild.Pose.Event:Connect(function(_, _, infos) if infos and infos.Unique and menus.Build.Visible then fill(categorieActuelle) end end)
+		end
+	end)
 	bd.Top.Close.Activated:Connect(function() showTab(nil) end)
 	local astuceDonnee = false
 	ouvrir.Build = function()

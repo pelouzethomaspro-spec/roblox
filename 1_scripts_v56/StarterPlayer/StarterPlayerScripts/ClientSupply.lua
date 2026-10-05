@@ -1,4 +1,4 @@
-ClientSupply = {}
+local ClientSupply = {}
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")

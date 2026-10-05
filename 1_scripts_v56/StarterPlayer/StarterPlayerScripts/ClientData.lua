@@ -37,7 +37,7 @@ end
 -- ======================================================================================================================
 
 function ClientData.GetPlotSize(player: Player)
-	local currentX = 20          -- identique a PlayerData (baseX, baseZ)
+	local currentX = 18          -- v56 : identique a PlayerData (baseX = 18 depuis la v49 ; 20 dessinait 2 colonnes sur le trottoir)
 	local currentZ = 11
 
 	if ClientData.Data and ClientData.Data.Extensions then

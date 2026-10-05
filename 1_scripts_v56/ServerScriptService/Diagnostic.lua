@@ -251,6 +251,7 @@ do
 	local f = ReplicatedStorage:FindFirstChild("DiagnosticFunction")
 	if not f then f = Instance.new("RemoteFunction"); f.Name = "DiagnosticFunction"; f.Parent = ReplicatedStorage end
 	local dernier = {}
+	game:GetService("Players").PlayerRemoving:Connect(function(p) dernier[p.UserId] = nil end)     -- v56 : nettoyage
 	f.OnServerInvoke = function(player, mode)
 		-- pas plus de 4 analyses par seconde et par joueur
 		local t = os.clock()

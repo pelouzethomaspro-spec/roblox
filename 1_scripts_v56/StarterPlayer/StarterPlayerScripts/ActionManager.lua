@@ -6,8 +6,6 @@ ActionManager.Item = nil
 
 function ActionManager.ChangerMode(nouveauMode, nomBouton)
 	
-	print("appeled")
-
 	if ActionManager.Item then
 		ActionManager.Item:Destroy()
 		ActionManager.Item = nil

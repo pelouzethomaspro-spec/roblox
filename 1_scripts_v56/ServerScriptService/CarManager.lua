@@ -143,20 +143,40 @@ local CADENCE_MIN, CADENCE_MAX = 14, 24   -- secondes entre deux clients d'un jo
 
 -- v55 : cadence des clients = temps de base du rang (Rank.Spawn, x 0,8..1,3 au hasard) divise par le multiplicateur des
 -- panneaux publicitaires (annexe, jusqu'a x2) et de la decoration (0,85..1,5) calcules par Diagnostic.
+-- v56 : ... divise aussi par l'ATTRACTIVITE (1 + 0,10 par station au-dela de la premiere, x1,8 au plus : une grande station
+-- attire plus de monde) et par la NOTE globale de la station (Notes : 0,90 .. 1,15). Jamais moins de CADENCE_PLANCHER s.
 local Diagnostic = nil
+local Notes = nil
+CarManager.ATTRACTIVITE_PAR_STATION = 0.10
+CarManager.ATTRACTIVITE_MAX = 1.8
+CarManager.CADENCE_PLANCHER = 4
+local function moduleOptionnel(nom)
+	local ok, mod = pcall(function() return require(script.Parent:WaitForChild(nom, 10)) end)
+	return ok and mod or false
+end
+function CarManager.Attractivite(player)
+	local data = PlayerData.GetData(player)
+	local n = 0
+	for _ in pairs((data and data.Stations) or {}) do n += 1 end
+	return math.min(CarManager.ATTRACTIVITE_MAX, 1 + CarManager.ATTRACTIVITE_PAR_STATION * math.max(0, n - 1))
+end
 function CarManager.Cadence(player)
-	local rang = PlayerData.GetRank(player)
-	local base = (rang and rang.Spawn) or math.random(CADENCE_MIN, CADENCE_MAX)
+	local okR, rang = pcall(PlayerData.GetRank, player)
+	local base = (okR and rang and rang.Spawn) or math.random(CADENCE_MIN, CADENCE_MAX)
 	base = base * (0.8 + math.random() * 0.5)
-	if Diagnostic == nil then
-		local ok, mod = pcall(function() return require(script.Parent:WaitForChild("Diagnostic", 10)) end)
-		Diagnostic = ok and mod or false
-	end
+	if Diagnostic == nil then Diagnostic = moduleOptionnel("Diagnostic") end
+	if Notes == nil then Notes = moduleOptionnel("Notes") end
+	local m = 1
 	if Diagnostic and Diagnostic.Cadence then
-		local ok, c = pcall(Diagnostic.Cadence, player, base)
-		if ok and c then return c end
+		local ok, _, mult = pcall(Diagnostic.Cadence, player, base)
+		if ok and mult then m = m * mult end
 	end
-	return base
+	m = m * CarManager.Attractivite(player)
+	if Notes and Notes.MultCadence then
+		local ok, mn = pcall(Notes.MultCadence, player)
+		if ok and mn then m = m * mn end
+	end
+	return math.max(CarManager.CADENCE_PLANCHER, base / m)
 end
 
 -- Direction avant d'un modele de voiture d'apres ses roues : centre des roues avant - centre des roues arriere
@@ -866,6 +886,7 @@ local function CarLifecycle(car, player, spawnFolder)
 	local attente = nil          -- debut de l'attente d'une caisse (FIND_CAISSE) : sert a prevenir le joueur (v51 : le client attend, il ne part plus sans payer)
 
 	local state = "CAR_QUEUE"
+	local tArrivee = os.clock()      -- v56 : pour la note Rapidite (attente jusqu'au debut du service)
 
 	while car.Parent do
 		local data = PlayerData.GetData(player)
@@ -947,7 +968,7 @@ local function CarLifecycle(car, player, spawnFolder)
 				i = i + 1
 				target = source:FindFirstChild(tostring(i))
 			end
-			AnimationTrajetCar(car, etapes, VITESSE, false, not achetee)
+			AnimationTrajetCar(car, etapes, VITESSE, false, true)     -- v56 : une achetee a l'arret demarre aussi doucement
 			car:Destroy()
 			break
 
@@ -1043,6 +1064,8 @@ local function CarLifecycle(car, player, spawnFolder)
 				retirerInvite(trouverMeuble(player, stationID))
 				cycle = lancerCycle(player, station, stationID, car)
 				lave = false
+				if Notes == nil then Notes = moduleOptionnel("Notes") end
+				if Notes and Notes.EnregistrerAttente then pcall(Notes.EnregistrerAttente, player, os.clock() - tArrivee - 25) end   -- v56 : ~25 s de trajet normal
 				state = "FIND_CAISSE"
 				notifier(player, "service", car, {stationID = stationID})
 			elseif (station.Quantity or 0) <= 0 then
@@ -1207,10 +1230,17 @@ local function CarLifecycle(car, player, spawnFolder)
 						-- mutation (script Mutations) : une voiture en or paie x3, en argent x2, electrique x1,5
 						local mutation = car:GetAttribute("Mutation")
 						local bonus = (mutation == "Or" and 3) or (mutation == "Argent" and 2) or (mutation == "Electrique" and 1.5) or 1
-						PlayerData.AddMoney(player, math.floor((infos.Buy +  (infos.Sell - infos.Buy) * Car[Tier].Mult * (station.Mult or 1)) * bonus + 0.5))
-						PlayerData.AddXp(player,50* Car[Tier].Mult)
+						-- v56 : Mult de la station lu dans le catalogue (L1 1,0 ... E6 2,0) ; pourboire selon la note globale (Notes)
+						local infosStation = Catalogue.GetInfo("Furniture", station.Name)
+						local multStation = (infosStation and infosStation.Mult) or station.Mult or 1
+						if Notes == nil then Notes = moduleOptionnel("Notes") end
+						local pourboire = 1
+						if Notes and Notes.Pourboire then local okP, p = pcall(Notes.Pourboire, player) if okP and p then pourboire = p end end
+						PlayerData.AddMoney(player, math.floor((infos.Buy + (infos.Sell - infos.Buy) * Car[Tier].Mult * multStation * pourboire) * bonus + 0.5))
 						PlayerData.RemoveItemStation(player, stationID)
-						PlayerData.AddCar(player, Name, Tier)
+						PlayerData.AddCar(player, Name, Tier)                 -- v56 : avant AddXp, pour que le rang (Requis) soit a jour
+						PlayerData.AddXp(player, 50 * Car[Tier].Mult)
+						if Notes and Notes.VoitureServie then pcall(Notes.VoitureServie, player) end
 					end
 				end
 

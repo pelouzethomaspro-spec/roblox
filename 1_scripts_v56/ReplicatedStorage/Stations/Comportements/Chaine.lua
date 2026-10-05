@@ -108,6 +108,19 @@ function Chaine:modeleDe(id)
 	return L[hachage(id) % #L + 1]
 end
 
+-- v56 : reecriture des translations de Transform (x ECHELLE_ANIM) ; appelee au montage et a chaque reveil
+function Chaine:brancherEchelle()
+	if self.connEchelle or not self.echelleAnim or #(self.moteursEchelle or {}) == 0 then return end
+	local s, moteurs = self.echelleAnim, self.moteursEchelle
+	self.connEchelle = RunService.Stepped:Connect(function()
+		for _, m in ipairs(moteurs) do
+			local t = m.Transform
+			local pos = t.Position
+			if pos.Magnitude > 1e-4 then m.Transform = (t - pos) + pos * s end
+		end
+	end)
+end
+
 function Chaine.nouveau(st)
 	local D, rep = st.D, st.rep
 	local self = setmetatable({st = st, D = D, rep = rep, E = D.EVENEMENTS, voitures = {}, signale = {}}, Chaine)
@@ -142,22 +155,19 @@ function Chaine.nouveau(st)
 	-- M4_9 de la map est 22/36 plus petite (Donnees.ECHELLE_ANIM). Les ROTATIONS des robots ne changent pas, mais les
 	-- TRANSLATIONS (tapis : voitures et palettes, scanner, ascenseur, sortie) doivent etre reduites d'autant : on reecrit
 	-- la translation de Transform juste apres l'animateur (Stepped), sinon les voitures traversent les murs du hall.
-	local s = D.ECHELLE_ANIM
-	if s and math.abs(s - 1) > 1e-3 then
-		local moteurs = {}
+	-- v56 : la connexion est RETABLIE a chaque reveil (debut) : arreter() la coupait quand le joueur s'eloignait et elle
+	-- n'etait jamais refaite au retour (les voitures retraversaient les murs).
+	local echelle = D.ECHELLE_ANIM
+	self.moteursEchelle = {}
+	if echelle and math.abs(echelle - 1) > 1e-3 then
+		self.echelleAnim = echelle
 		for _, nom in ipairs({"Voiture_0", "Voiture_1", "Voiture_2", "Voiture_3", "Voiture_4", "Voiture_5", "Voiture_6", "Palette_6", "CP_Mob_Scanner", "CP_Mob_Ascenseur"}) do
 			local p = st:piece(nom)
 			local m = p and p:FindFirstChild("Articulation")
-			if m then table.insert(moteurs, m) end
+			if m then table.insert(self.moteursEchelle, m) end
 		end
-		self.connEchelle = RunService.Stepped:Connect(function()
-			for _, m in ipairs(moteurs) do
-				local t = m.Transform
-				local pos = t.Position
-				if pos.Magnitude > 1e-4 then m.Transform = (t - pos) + pos * s end
-			end
-		end)
 	end
+	self:brancherEchelle()
 
 	-- robots : moteur (un bruit par mouvement), clac a la prise / pose, visseuse
 	self.robots = {}
@@ -328,6 +338,8 @@ end
 -- cycle
 ------------------------------------------------------------------
 function Chaine:debut(cy)
+	self:brancherEchelle()                      -- v56
+	if not (self.dossier and self.dossier.Parent) then self.dossier = Instance.new("Folder"); self.dossier.Name = "ChaineProduction_Voitures"; self.dossier.Parent = workspace end
 	local n = cy.n
 	for id, v in pairs(self.voitures) do
 		if id < n - 6 or id > n then self:detruireVoiture(v); self.voitures[id] = nil end
@@ -424,6 +436,7 @@ function Chaine:arreter()
 	for _, P in pairs(self.pistolets) do Effets.activer(P.jets, false); Sons.jouer(P.son, false) end
 	self.lumScan.Enabled = false; self.lumOk.Enabled = false
 	if self.connEchelle then self.connEchelle:Disconnect(); self.connEchelle = nil end
+	if self.dossier then self.dossier:Destroy(); self.dossier = nil end       -- v56 : plus de dossier de palettes orphelin a chaque reveil
 	self.n = nil
 end
 

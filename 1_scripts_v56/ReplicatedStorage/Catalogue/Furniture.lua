@@ -10,6 +10,9 @@
 		Prix       prix d'achat (rembourse integralement a la destruction)
 		Masque     cases occupees (lignes = z, colonnes = x), tournees selon l'orientation
 		Type       "Station" (une voiture y est servie) | "Caisse" (les clients payent) | nil (decor / stockage)
+		Mult       v56 : multiplicateur de gain de la station (CarManager : gain = (Sell - Buy) x Mult rarete x Mult station x
+		           pourboire) ; une meilleure station rapporte plus par voiture. Voir 2_documents/ECONOMIE_v56.md.
+		Rang       rang minimum (Catalogue/Rank) pour acheter l'objet (menu Construction : carte grisee en dessous)
 		Accepted   consommables acceptes (cles de Catalogue > Consommable)
 		Capacity   volume max de consommable dans la station (litres)
 		Automatic  true = fonctionne sans employe
@@ -45,6 +48,7 @@ local Furniture = {
 	["2"] = {
 		Nom = "Caisse automatique",
 		Prix = 2000,
+		Rang = "Or",                  -- v56
 		Demi = true,
 		Masque = {
 			{1},
@@ -82,6 +86,7 @@ local Furniture = {
 	["L1_Vide"] = {
 		Nom = "Lavage : place libre",
 		Prix = 600,
+		Mult = 1.0,
 		Masque = MASQUE_3x3,
 		Pivot = "centre",             -- tourne sur place autour de sa case centrale
 		Type = "Station",
@@ -92,6 +97,7 @@ local Furniture = {
 	["L2_Seaux"] = {
 		Nom = "Lavage aux seaux",
 		Prix = 900,
+		Mult = 1.2,
 		Masque = MASQUE_3x3,
 		Pivot = "centre",             -- tourne sur place autour de sa case centrale
 		Type = "Station",
@@ -102,6 +108,7 @@ local Furniture = {
 	["L3_Karcher"] = {
 		Nom = "Karcher sur pont roulant",
 		Prix = 2500,
+		Mult = 1.5, Rang = "Argent",
 		Masque = MASQUE_3x3,
 		Pivot = "centre",             -- tourne sur place autour de sa case centrale
 		Type = "Station",
@@ -112,6 +119,7 @@ local Furniture = {
 	["L4_Rouleaux"] = {
 		Nom = "Portique a rouleaux",
 		Prix = 4000,
+		Mult = 1.8, Rang = "Or",
 		Masque = MASQUE_3x3,
 		Pivot = "centre",             -- tourne sur place autour de sa case centrale
 		Type = "Station",
@@ -124,6 +132,7 @@ local Furniture = {
 	["E1_Base"] = {
 		Nom = "Entretien de base",
 		Prix = 800,
+		Mult = 1.0,
 		Masque = MASQUE_3x3,
 		Pivot = "centre",             -- tourne sur place autour de sa case centrale
 		Type = "Station",
@@ -134,6 +143,7 @@ local Furniture = {
 	["E2_Barils"] = {
 		Nom = "Barils et jerricans",
 		Prix = 1200,
+		Mult = 1.2, Rang = "Argent",
 		Masque = MASQUE_3x3,
 		Pivot = "centre",             -- tourne sur place autour de sa case centrale
 		Type = "Station",
@@ -144,6 +154,7 @@ local Furniture = {
 	["E3_Pompes"] = {
 		Nom = "Pompes (essence, gaz, electrique)",
 		Prix = 2000,
+		Mult = 1.4, Rang = "Or",
 		Masque = MASQUE_3x3,
 		Pivot = "centre",             -- tourne sur place autour de sa case centrale
 		Type = "Station",
@@ -154,6 +165,7 @@ local Furniture = {
 	["E4_Bornes"] = {
 		Nom = "Bornes robotisees",
 		Prix = 3500,
+		Mult = 1.8, Rang = "Or",
 		Masque = MASQUE_3x3,
 		Pivot = "centre",             -- tourne sur place autour de sa case centrale
 		Type = "Station",
@@ -164,6 +176,7 @@ local Furniture = {
 	["E5_Pneus"] = {
 		Nom = "Changement de roues",
 		Prix = 5000,
+		Mult = 1.5, Rang = "Platine",
 		Masque = MASQUE_3x3,
 		Pivot = "centre",             -- tourne sur place autour de sa case centrale
 		Type = "Station",
@@ -174,6 +187,7 @@ local Furniture = {
 	["E6_Peinture"] = {
 		Nom = "Cabine de peinture",
 		Prix = 8000,
+		Mult = 2.0, Rang = "Diamant",
 		Masque = MASQUE_3x3,
 		Pivot = "centre",             -- tourne sur place autour de sa case centrale
 		Type = "Station",
@@ -184,6 +198,7 @@ local Furniture = {
 	["E7_Teinte"] = {
 		Nom = "Pose de film teinte",
 		Prix = 6000,
+		Mult = 1.6, Rang = "Platine",
 		Masque = MASQUE_3x3,
 		Pivot = "centre",             -- tourne sur place autour de sa case centrale
 		Type = "Station",

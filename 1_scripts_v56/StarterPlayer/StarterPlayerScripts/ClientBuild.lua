@@ -1,4 +1,7 @@
-ClientBuild = {}
+local ClientBuild = {}
+local laser, object = nil, nil          -- v56 : etaient des globales accidentelles (laser lu dans ClicDeplacer avant sa 1re affectation)
+-- v56 : evenement "objet pose" (nom, categorie, infos) : l'UI repeint les cartes (objets uniques)
+ClientBuild.Pose = Instance.new("BindableEvent")
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -194,18 +197,29 @@ local function PoserIci()
 	if categorie == "Acces" and accesEnCours then
 		if not AccesFunction then return false, "deplacement indisponible" end
 		local ok, raison = AccesFunction:InvokeServer(accesEnCours.quoi, accesEnCours.index)
-		if ok then ClientBuild.DestroyPhantom()
+		if ok then ClientBuild.DestroyPhantom(); diagnostic()          -- v56 : le mode Circulation suit la nouvelle entree / sortie
 		elseif prixUI then prixUI.Price.Text = "Impossible : " .. tostring(raison); prixUI.Price.TextColor3 = Color3.fromRGB(247, 85, 0) end
 		return ok, raison
 	end
 	if deplacement then
 		if not Deplacerfunction then return false, "deplacement indisponible" end
 		local ok, raison = Deplacerfunction:InvokeServer(deplacement, orientation, target)
-		if ok then ClientBuild.DestroyPhantom(); diagnostic() end
+		if ok then ClientBuild.DestroyPhantom(); diagnostic()
+		elseif prixUI then prixUI.Price.Text = "Impossible : " .. tostring(raison); prixUI.Price.TextColor3 = Color3.fromRGB(247, 85, 0) end
 		return ok, raison
 	end
-	local succes, raison = Placefunction:InvokeServer(phantom.Name, categorie, orientation, target)
-	if not succes then warn("Placement refuse : " .. tostring(raison)) else diagnostic() end
+	local nom, cat = phantom.Name, categorie
+	local succes, raison = Placefunction:InvokeServer(nom, cat, orientation, target)
+	if not succes then
+		-- v56 : la raison du refus s'affiche sur l'etiquette du fantome (les toasts sont desactives) au lieu de la console seule
+		warn("Placement refuse : " .. tostring(raison))
+		if prixUI then prixUI.Price.Text = "Impossible : " .. tostring(raison); prixUI.Price.TextColor3 = Color3.fromRGB(247, 85, 0) end
+	else
+		diagnostic()
+		local infos = Catalogue.GetInfo(cat, nom)
+		if infos and infos.Unique then ClientBuild.DestroyPhantom() end      -- v56 : un objet unique ne se pose qu'une fois
+		ClientBuild.Pose:Fire(nom, cat, infos)
+	end
 	return succes, raison
 end
 
