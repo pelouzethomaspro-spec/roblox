@@ -7,7 +7,7 @@ Rien n'a été touché sur ton PC ni dans Studio. Rien n'est publié.
 
 1. **Ouvre `Station_Tycoon_v56_pre.rbxl`** (celui que tu m'as envoyé : c'est la v55 + tes 9 panneaux pub importés, rien d'autre).
    Enregistre-le tout de suite **sous `Station_Tycoon_v56.rbxl`** (Fichier → Enregistrer sous) pour garder le `_pre` intact.
-2. **Colle les 30 scripts du dossier `livraison_v56/`** : pour chaque fichier, ouvre le script au même chemin dans l'Explorer,
+2. **Colle les 31 scripts du dossier `livraison_v56/`** : pour chaque fichier, ouvre le script au même chemin dans l'Explorer,
    Ctrl+A, colle. Les deux NOUVEAUX scripts à créer (clic droit sur le dossier → Insérer un objet → ModuleScript, puis
    renommer et coller) :
    * `ServerScriptService/Notes` (ModuleScript) — notes de la station, agent d'entretien.
@@ -92,7 +92,7 @@ simulé : Argent 20 min, Or 1 h 15, Platine 3 h, Diamant 7 h, Maître 19 h, Lég
   réutilisé là où il existe).
 
 ## 4. Fichiers
-* `livraison_v56/` : les 30 scripts à coller (28 modifiés + `Notes` + `Boutique`), rangés comme dans l'Explorer.
+* `livraison_v56/` : les 31 scripts à coller (29 modifiés + `Notes` + `Boutique`), rangés comme dans l'Explorer.
 * `1_scripts_v56/` : le jeu complet (99 + 2 scripts) tel qu'il doit être après collage.
 * `2_documents/ECONOMIE_v56.md`, `2_documents/outils_studio/Appliquer_IDs_v24.lua`, `3_pipeline/economie/`.
 * `places/Station_Tycoon_v56_pre.rbxl` : ton fichier, inchangé.
